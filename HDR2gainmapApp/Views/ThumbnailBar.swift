@@ -30,42 +30,59 @@ struct ThumbnailBar: View {
 struct ThumbnailCell: View {
     let image: HDRImage
     let isSelected: Bool
-    
+
+    // Contenitore esterno: 120×80 per landscape, 80×120 per portrait
+    private func containerSize(for thumbnail: NSImage?) -> CGSize {
+        guard let t = thumbnail else { return CGSize(width: 120, height: 80) }
+        return (t.size.width >= t.size.height)
+        ? CGSize(width: 120, height: 80)  // landscape (o quadrata)
+        : CGSize(width: 80,  height: 120) // portrait
+    }
+
     var body: some View {
+        // Calcola dimensioni una sola volta
+        let thumb = image.thumbnailImage
+        let outer = containerSize(for: thumb)
+
         VStack(spacing: 4) {
-            // Thumbnail image
-            Group {
-                if let thumbnail = image.thumbnailImage {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    Color.gray.opacity(0.3)
-                        .overlay {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        }
+            ZStack {
+                // Fondo “slot” del contenitore
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.black.opacity(0.06))
+
+                // Immagine mai croppata: .fit dentro il contenitore
+                Group {
+                    if let thumbnail = thumb {
+                        Image(nsImage: thumbnail)
+                            .resizable()
+                            .interpolation(.high)
+                            .antialiased(true)
+                            .aspectRatio(contentMode: .fit) // <— NO CROP
+                            // Non serve calcolare la “seconda cornice”: .fit
+                            // la ricava automaticamente (es. 107×80 su 120×80).
+                    } else {
+                        Color.gray.opacity(0.25)
+                            .overlay {
+                                ProgressView().scaleEffect(0.7)
+                            }
+                    }
                 }
+                .padding(4) // piccolo respiro per non “baciare” i bordi arrotondati
             }
-            .frame(width: 120, height: 80)
+            .frame(width: outer.width, height: outer.height)
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .overlay(
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             )
-            
-            // Filename
+
+            // Filename: larghezza coerente con il contenitore esterno
             Text(image.fileName)
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(width: 120)
+                .frame(width: outer.width)
                 .foregroundStyle(isSelected ? .primary : .secondary)
         }
     }
-}
-
-#Preview {
-    ThumbnailBar(viewModel: MainViewModel())
-        .frame(height: 140)
 }
