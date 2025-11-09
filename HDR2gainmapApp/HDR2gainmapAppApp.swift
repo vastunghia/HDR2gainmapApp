@@ -1,17 +1,15 @@
-//
-//  HDR2gainmapAppApp.swift
-//  HDR2gainmapApp
-//
-//  Created by Sergio De Zordo on 21/10/25.
-//
-
 import SwiftUI
 
 @main
-struct HDR2gainmapAppApp: App {
+struct HDR2gainmapApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView()   // la tua view principale
+        }
+
+        // <-- AGGIUNGI QUESTO BLOCCO
+        Settings {
+            PreferencesView()
         }
     }
 }

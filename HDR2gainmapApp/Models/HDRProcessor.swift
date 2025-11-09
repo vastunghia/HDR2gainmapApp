@@ -14,7 +14,7 @@ class HDRProcessor {
     
     private lazy var ctx_linear_p3: CIContext = {
         CIContext(options: [.workingColorSpace: linear_p3,
-                           .outputColorSpace: linear_p3])
+                            .outputColorSpace: linear_p3])
     }()
     
     private lazy var encode_ctx = CIContext()
@@ -44,8 +44,8 @@ class HDRProcessor {
         
         // Opzionale: aggiungi overlay clipping
         let finalImage = image.settings.showClippedOverlay
-            ? try await addClippingOverlay(hdr: hdr, sdr: sdr, headroom: headroom, color: image.settings.overlayColor)
-            : sdr
+        ? try await addClippingOverlay(hdr: hdr, sdr: sdr, headroom: headroom, color: image.settings.overlayColor)
+        : sdr
         
         // Converti CIImage → NSImage per preview
         return try ciImageToNSImage(finalImage)
@@ -103,11 +103,20 @@ class HDRProcessor {
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
-        try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
-                                              to: outputURL,
-                                              format: .RGB10,
-                                              colorSpace: p3_cs,
-                                              options: export_options)
+        let method = resolveExportMethodPreference()
+        switch method {
+        case .heif:
+            try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
+                                                   to: outputURL,
+                                                   format: .RGB10,
+                                                   colorSpace: p3_cs,
+                                                   options: export_options)
+        case .heif10:
+            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
+                                                     to: outputURL,
+                                                     colorSpace: p3_cs,
+                                                     options: export_options)
+        }
     }
     
     // MARK: - Private Helpers
