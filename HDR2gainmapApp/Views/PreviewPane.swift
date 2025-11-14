@@ -14,55 +14,30 @@ struct PreviewPane: View {
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     
-                    // Loading overlay (semi-trasparente)
+                    // Loading overlay: solo spinner, nessun velo
                     if viewModel.isLoadingPreview {
-                        Color.black.opacity(0.4)
-                            .overlay {
-                                VStack(spacing: 12) {
-                                    ProgressView()
-                                        .scaleEffect(1.5)
-                                        .tint(.white)
-                                    Text("Updating preview...")
-                                        .font(.headline)
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 8)
-                                        .background(
-                                            Capsule()
-                                                .fill(Color.black.opacity(0.6))
-                                        )
-                                }
-                            }
+                        // overlay trasparente che blocca l’input
+                        Rectangle()
+                            .fill(Color.clear)
+                            .contentShape(Rectangle())
+                            .allowsHitTesting(true)
+                            .overlay(
+                                ProgressView()
+                                    .controlSize(.large)
+                                    .scaleEffect(1.2)
+                                    .tint(.white)
+                                    .transition(.opacity)
+                            )
                     }
                 } else if viewModel.selectedImage != nil {
                     // Nessuna preview ma immagine selezionata (stato iniziale)
-                    //                    VStack(spacing: 16) {
-                    //                        Image(systemName: "photo.on.rectangle.angled")
-                    //                            .font(.system(size: 48))
-                    //                            .foregroundStyle(.secondary)
-                    //
-                    //                        Text("Loading preview...")
-                    //                            .font(.headline)
-                    //                            .foregroundStyle(.secondary)
-                    //                    }
                     if viewModel.isLoadingPreview {
-                        // Loading in corso
-                        VStack(spacing: 16) {
-                            ProgressView()
-                                .scaleEffect(1.5)
-                            Text("Generating preview...")
-                                .font(.headline)
-                                .foregroundStyle(.secondary)
-                        }
-                        //                } else if viewModel.isLoadingPreview {
-                        //                    // Loading in corso
-                        //                    VStack(spacing: 16) {
-                        //                        ProgressView()
-                        //                            .scaleEffect(1.5)
-                        //                        Text("Generating preview...")
-                        //                            .font(.headline)
-                        //                            .foregroundStyle(.secondary)
-                        //                    }
+                        // Solo spinner mentre genera la preview
+                        ProgressView()
+                            .controlSize(.large)
+                            .scaleEffect(1.2)
+                            .tint(.secondary)
+                            .transition(.opacity)
                     } else if let error = viewModel.previewError {
                         // Immagine non è HDR valida
                         VStack(spacing: 20) {
@@ -109,13 +84,14 @@ struct PreviewPane: View {
             
             // Metadata bar
             if let selectedImage = viewModel.selectedImage {
-                let _ = print("📊 MetadataBar rendering for: \(selectedImage.fileName) (id: \(selectedImage.id))")
+//                let _ = print("📊 MetadataBar rendering for: \(selectedImage.fileName) (id: \(selectedImage.id))")
                 MetadataBar(image: selectedImage)
                     .id(selectedImage.id)  // Forza refresh quando cambia immagine
             }
-        }  // ← Chiude VStack principale
-    }  // ← Chiude var body: some View
-}  // ← Chiude struct PreviewPane
+        }
+    }
+}
+
 
 // MARK: - Metadata Bar
 

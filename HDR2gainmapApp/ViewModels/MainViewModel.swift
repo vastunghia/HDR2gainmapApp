@@ -41,6 +41,15 @@ class MainViewModel {
     // Preview error (marca immagini non valide)
     //    var previewError: String?
     
+    // Statistiche di clipping della preview corrente
+    struct ClippingStats {
+        let clipped: Int   // pixel clippati (da collegare alla tua maschera)
+        let total: Int     // pixel totali della preview
+    }
+
+    // …
+    var clippingStats: ClippingStats? = nil
+    
     // Computed property: l'immagine corrente è valida per il processing?
     var isCurrentImageValid: Bool {
         // Un'immagine è valida se è selezionata E non ha errori
@@ -139,6 +148,7 @@ class MainViewModel {
         // Reset stato precedente per garantire refresh pulito
         self.previewError = nil
         self.currentPreview = nil
+        self.clippingStats = nil
         
         // Genera preview automaticamente
         await generatePreview()
@@ -153,39 +163,40 @@ class MainViewModel {
     //    var fallbackImage: NSImage?
     
     /// Genera preview per l'immagine selezionata con i settings correnti
+    @MainActor
     func generatePreview() async {
-        guard let image = selectedImage else {
-            isLoadingPreview = false
-            return
-        }
-        
-        print("🔄 Generating preview for: \(image.fileName)")
-        
-        if !isLoadingPreview {
-            isLoadingPreview = true
-        }
-        
-        // Reset preview error
-        previewError = nil
-        
+        guard let image = self.selectedImage else { return }
+        self.isLoadingPreview = true
+        self.previewError = nil
+        self.currentPreview = nil
+        self.clippingStats = nil
+
         do {
-            let preview = try await processor.generatePreview(for: image)
+            // ⬇️ usa l’overload con callback: niente più ricalcolo separato
+            let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total in
+                Task { @MainActor in
+                    if total > 0 {
+                        self?.clippingStats = ClippingStats(clipped: clipped, total: total)
+                    } else {
+                        self?.clippingStats = nil
+                    }
+                }
+            }
+
             self.currentPreview = preview
             self.isLoadingPreview = false
-            print("✅ Preview generated successfully for: \(image.fileName)")
+
+            // (opzionale) log rapido
+            if let s = self.clippingStats {
+                print("Clipping full-res: \(s.clipped)/\(s.total) = \(Double(s.clipped) / Double(s.total) * 100)%")
+            }
+
         } catch {
             self.isLoadingPreview = false
-            
-            // Salva l'errore
-            let errorMsg = error.localizedDescription
-            self.previewError = errorMsg
-            
-            // Resetta currentPreview
+            self.previewError = error.localizedDescription
             self.currentPreview = nil
-            
-            print("❌ Preview generation failed for: \(image.fileName)")
-            print("   Error: \(errorMsg)")
-            print("   Image marked as invalid - UI will show error message")
+            self.clippingStats = nil
+            print("❌ Preview failed: \(error.localizedDescription)")
         }
     }
     

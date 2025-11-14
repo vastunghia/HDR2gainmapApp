@@ -19,7 +19,7 @@ class ProcessingSettings {  // ← Cambiato da struct a class
     var percentile: Float = 0.999
     
     // Opzioni visualizzazione
-    var showClippedOverlay: Bool = false
+    var showClippedOverlay: Bool = true
     var overlayColor: String = "magenta"
     
     // Opzioni export

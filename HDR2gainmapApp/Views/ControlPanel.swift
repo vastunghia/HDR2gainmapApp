@@ -1,5 +1,17 @@
 import SwiftUI
 
+/// Formats a percentage ensuring at least two non-zero significant digits (up to 6 decimals).
+/// Examples: 23      -> "23%"; 2.3 -> "2.3%"; 0.45 -> "0.45%"; 0.0042 -> "0.0042%".
+func formatPercentTwoSig(_ pct: Double) -> String {
+    guard pct.isFinite, pct > 0 else { return "0%" }
+    for decimals in 0...6 {
+        let s = String(format: "%.\(decimals)f", pct)
+        let nonZero = s.filter { $0 >= "1" && $0 <= "9" }.count
+        if nonZero >= 2 { return s + "%" }
+    }
+    return String(format: "%.6f%%", pct)
+}
+
 struct ControlPanel: View {
     let viewModel: MainViewModel
     
@@ -189,6 +201,33 @@ struct TonemapMethodSection: View {
             case .percentile:
                 PercentileControls(settings: $settings, onSettingsChange: onSettingsChange, isDisabled: !viewModel.isCurrentImageValid)
             }
+            // Clipping stats line
+            Group {
+                if viewModel.isCurrentImageValid, let stats = viewModel.clippingStats, stats.total > 0 {
+                    let pct = (Double(stats.clipped) / Double(stats.total)) * 100.0
+                    HStack(spacing: 6) {
+                        Text("Number of pixels clipped:")
+                            .foregroundStyle(.secondary)
+                        Text("\(stats.clipped.formatted()) (\(formatPercentTwoSig(pct)))")
+                            .fontWeight(.medium)
+                            .monospacedDigit()
+                        Spacer()
+                    }
+                    .font(.caption)
+                    .padding(.top, 6)
+                    .transition(.opacity)
+                } else {
+                    HStack(spacing: 6) {
+                        Text("Number of pixels clipped: – (–)")
+                            .foregroundStyle(.tertiary)
+                        Spacer()
+                    }
+                    .font(.caption)
+                    .padding(.top, 6)
+                    .transition(.opacity)
+                }
+            }
+
         }
         .padding(.horizontal)
     }
@@ -222,6 +261,7 @@ struct PeakMaxControls: View {
             Text("Controls the softening curve applied to peak brightness")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            
         }
         .padding(.vertical, 4)
     }

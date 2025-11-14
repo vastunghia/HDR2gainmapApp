@@ -116,7 +116,7 @@ class HDRImage: Identifiable {
     
     private func loadThumbnailAsync() async {
         let startTime = Date()
-        print("🔄 START thumbnail generation for: \(fileName)")
+//        print("🔄 START thumbnail generation for: \(fileName)")
         
         // Usa QuickLook Thumbnailing per thumbnails veloci e ottimizzate
         let size = CGSize(width: 240, height: 160) // 2x della dimensione display per Retina
@@ -137,11 +137,11 @@ class HDRImage: Identifiable {
             }
             
             let elapsed = Date().timeIntervalSince(startTime)
-            print("✅ DONE thumbnail generation for: \(fileName) (took \(String(format: "%.2f", elapsed))s)")
+//            print("✅ DONE thumbnail generation for: \(fileName) (took \(String(format: "%.2f", elapsed))s)")
             
         } catch {
             // Fallback: usa icona generica se QuickLook fallisce
-            print("❌ QuickLook thumbnail failed for \(self.fileName): \(error)")
+//            print("❌ QuickLook thumbnail failed for \(self.fileName): \(error)")
             
             // Fallback più leggero: carica solo i metadata senza decodificare
             await self.loadFallbackThumbnail()

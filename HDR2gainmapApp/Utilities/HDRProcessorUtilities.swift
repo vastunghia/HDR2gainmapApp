@@ -73,6 +73,24 @@ func max_luminance_hdr(from ci_image: CIImage,
     return y_peak
 }
 
+/// Peak = massimo assoluto della Y lineare (stessa Y usata nella mask)
+//func peak_luminance_from_linear_luma(_ hdr: CIImage, context: CIContext) -> Float {
+//    let y = linear_luma(hdr) // la tua funzione attuale
+//    // CIAreaMaximum restituisce un'immagine 1x1 RGBAf con il massimo per canale
+//    let extent = y.extent
+//    let maxImg = CIFilter(name: "CIAreaMaximum",
+//                          parameters: [kCIInputImageKey: y,
+//                                       kCIInputExtentKey: CIVector(cgRect: extent)])!.outputImage!
+//    var pixel = [Float](repeating: 0, count: 4)
+//    context.render(maxImg,
+//                   toBitmap: &pixel,
+//                   rowBytes: MemoryLayout<Float>.size * 4,
+//                   bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+//                   format: .RGBAf,
+//                   colorSpace: nil)
+//    return pixel[0] // R = Y
+//}
+
 func percentile_headroom(from ci_image: CIImage,
                          context: CIContext,
                          linear_cs: CGColorSpace,
@@ -145,10 +163,12 @@ func pixel_count(of img: CIImage) -> Double {
 
 // MARK: - Clip Mask Utilities
 
-func build_clip_mask_image_no_kernel(hdr: CIImage, threshold_headroom: Float) -> CIImage? {
+// 0) Fattorizza: costruisce la MASK BINARIA (valore nel canale R: 0 o 1) senza colorizzarla.
+func build_clip_binary_mask(hdr: CIImage, threshold_headroom: Float) -> CIImage? {
     var y_img = linear_luma(hdr)
 
-    let sub = CIFilter.colorMatrix(); sub.inputImage = y_img
+    let sub = CIFilter.colorMatrix()
+    sub.inputImage = y_img
     sub.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
     sub.gVector = CIVector(x: 0, y: 0, z: 0, w: 0)
     sub.bVector = CIVector(x: 0, y: 0, z: 0, w: 0)
@@ -156,30 +176,94 @@ func build_clip_mask_image_no_kernel(hdr: CIImage, threshold_headroom: Float) ->
     sub.biasVector = CIVector(x: CGFloat(-threshold_headroom), y: 0, z: 0, w: 0)
     y_img = sub.outputImage!
 
-    let clamp_pos = CIFilter.colorClamp(); clamp_pos.inputImage = y_img
+    let clamp_pos = CIFilter.colorClamp()
+    clamp_pos.inputImage = y_img
     clamp_pos.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
     clamp_pos.maxComponents = CIVector(x: 1e9, y: 0, z: 0, w: 1)
     y_img = clamp_pos.outputImage!
 
     let gain: CGFloat = 1_000_000
-    let amp = CIFilter.colorMatrix(); amp.inputImage = y_img
+    let amp = CIFilter.colorMatrix()
+    amp.inputImage = y_img
     amp.rVector = CIVector(x: gain, y: 0, z: 0, w: 0)
     amp.gVector = CIVector(x: 0,    y: 0, z: 0, w: 0)
     amp.bVector = CIVector(x: 0,    y: 0, z: 0, w: 0)
     amp.aVector = CIVector(x: 0,    y: 0, z: 0, w: 1)
     y_img = amp.outputImage!
 
-    let clamp01 = CIFilter.colorClamp(); clamp01.inputImage = y_img
+    let clamp01 = CIFilter.colorClamp()
+    clamp01.inputImage = y_img
     clamp01.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
     clamp01.maxComponents = CIVector(x: 1, y: 0, z: 0, w: 1)
-    let binary_r = clamp01.outputImage!
+    return clamp01.outputImage
+}
 
-    let to_rgb = CIFilter.colorMatrix(); to_rgb.inputImage = binary_r
-    to_rgb.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
-    to_rgb.gVector = CIVector(x: 1, y: 0, z: 0, w: 0)
-    to_rgb.bVector = CIVector(x: 1, y: 0, z: 0, w: 0)
-    to_rgb.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
-    return to_rgb.outputImage
+//func build_clip_mask_image_no_kernel(hdr: CIImage, threshold_headroom: Float) -> CIImage? {
+//    guard let binary_r = build_clip_binary_mask(hdr: hdr, threshold_headroom: threshold_headroom) else {
+//        return nil
+//    }
+//    let to_rgb = CIFilter.colorMatrix()
+//    to_rgb.inputImage = binary_r
+//    to_rgb.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+//    to_rgb.gVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+//    to_rgb.bVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+//    to_rgb.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+//    return to_rgb.outputImage
+//}
+
+// 2) NUOVO: stessa mask + conteggio full-res.
+//    'context' lo puoi passare (riusa il tuo CIContext), altrimenti creane uno locale.
+//func build_clip_mask_image_and_count(hdr: CIImage,
+//                                     threshold_headroom: Float,
+//                                     context: CIContext) -> (mask: CIImage, clipped: Int, total: Int)? {
+//    guard let binary_r = build_clip_binary_mask(hdr: hdr, threshold_headroom: threshold_headroom) else {
+//        return nil
+//    }
+//
+//    // Colorizza in RGB per ottenere la mask da mostrare (come facevi già)
+//    let to_rgb = CIFilter.colorMatrix()
+//    to_rgb.inputImage = binary_r
+//    to_rgb.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+//    to_rgb.gVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+//    to_rgb.bVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+//    to_rgb.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+//    guard let rgbMask = to_rgb.outputImage else { return nil }
+//
+//    // Conteggio: renderizza la *binaria* e conta i pixel con R > 0
+//    let w = Int(binary_r.extent.width.rounded())
+//    let h = Int(binary_r.extent.height.rounded())
+//    guard w > 0, h > 0 else { return nil }
+//
+//    let clipped = countNonZeroR_inRGBA8(binary_r, width: w, height: h, context: context)
+//    let total = w * h
+//    return (mask: rgbMask, clipped: clipped, total: total)
+//}
+
+// 3) Supporto: renderizza in RGBA8 e conta i pixel con canale R > 0.
+//    (Per mask mono, R=G=B; l’alpha è tipicamente 255 ovunque e NON va usata per il conteggio.)
+/// Render RGBA8 and count pixels with R > 0 (mask content, not alpha).
+func countNonZeroR_inRGBA8(_ image: CIImage, width: Int, height: Int, context: CIContext) -> Int {
+    let rowBytes = width * 4
+    var buffer = [UInt8](repeating: 0, count: rowBytes * height)
+
+    context.render(
+        image,
+        toBitmap: &buffer,
+        rowBytes: rowBytes,
+        bounds: CGRect(x: 0, y: 0, width: width, height: height),
+        format: .RGBA8,
+        colorSpace: CGColorSpaceCreateDeviceRGB()
+    )
+
+    var count = 0
+    var i = 0
+    for _ in 0..<height {
+        for _ in 0..<width {
+            if buffer[i] > 0 { count += 1 } // use >=128 for harder binarization
+            i += 4
+        }
+    }
+    return count
 }
 
 // MARK: - Maker Apple Metadata
