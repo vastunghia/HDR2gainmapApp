@@ -85,7 +85,7 @@ struct PreviewPane: View {
             // Metadata bar
             if let selectedImage = viewModel.selectedImage {
 //                let _ = print("📊 MetadataBar rendering for: \(selectedImage.fileName) (id: \(selectedImage.id))")
-                MetadataBar(image: selectedImage)
+                MetadataBar(image: selectedImage, headroomRaw: viewModel.measuredHeadroomRaw)
                     .id(selectedImage.id)  // Forza refresh quando cambia immagine
             }
         }
@@ -97,6 +97,7 @@ struct PreviewPane: View {
 
 struct MetadataBar: View {
     let image: HDRImage
+    let headroomRaw: Float
     
     @State private var metadata: ImageMetadata?
     @State private var loadError: Bool = false
@@ -148,6 +149,13 @@ struct MetadataBar: View {
                             value: metadata.bitDepthString
                         )
                     }
+                    
+                    // Headroom (raw)
+                    MetadataItem(
+                        icon: "sun.max",
+                        label: "Headroom",
+                        value: String(format: "%.3f", headroomRaw)
+                    )
                     
                     // File Size
                     if metadata.fileSize > 0 {

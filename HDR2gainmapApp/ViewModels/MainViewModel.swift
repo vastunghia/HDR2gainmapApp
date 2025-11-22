@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
+internal import Combine
+import QuartzCore // per CACurrentMediaTime()
 
 /// ViewModel principale che gestisce lo stato dell'app
 @MainActor
@@ -12,7 +14,9 @@ class MainViewModel {
     var images: [HDRImage] = []
     
     // Immagine correntemente selezionata
-    var selectedImage: HDRImage?
+    var selectedImage: HDRImage? {
+        didSet { refreshMeasuredHeadroom() }
+    }
     
     // Preview generata per l'immagine selezionata
     var currentPreview: NSImage?
@@ -25,6 +29,9 @@ class MainViewModel {
     
     // Auto-refresh preview when settings change
     var autoRefreshPreview: Bool = true
+    
+    var measuredHeadroomRaw: Float = 1.0    // valore “reale” dal file HDR
+    var measuredHeadroom: Float = 1.0       // comodo per logiche che richiedono ≥ 1.0
     
     // Debouncing
     private var refreshTask: Task<Void, Never>?  // ← AGGIUNGI
@@ -46,7 +53,7 @@ class MainViewModel {
         let clipped: Int   // pixel clippati (da collegare alla tua maschera)
         let total: Int     // pixel totali della preview
     }
-
+    
     // …
     var clippingStats: ClippingStats? = nil
     
@@ -55,6 +62,18 @@ class MainViewModel {
         // Un'immagine è valida se è selezionata E non ha errori
         return selectedImage != nil && previewError == nil
     }
+    
+//    @inline(__always) private func tnow() -> Double { CACurrentMediaTime() }
+//    @inline(__always) private func ms(_ start: Double) -> String {
+//        String(format: "%.2f ms", (CACurrentMediaTime() - start) * 1000.0)
+//    }
+//    private func logUI(_ msg: String) {
+//        print("🧩 [UI] \(msg)")
+//    }
+//    
+//    private var currentShowClipped: Bool {
+//        selectedImage?.settings.showClippedOverlay ?? false
+//    }
     
     private let processor = HDRProcessor.shared
     
@@ -118,26 +137,26 @@ class MainViewModel {
     func loadThumbnailsInOrder() async {
         let items = self.images
         guard !items.isEmpty else { return }
-
-//        logThumb("BATCH_START", file: "count=\(items.count)")
-//        let batchSP = sp_thumbs_begin("ThumbsBatch", "count=\(items.count)")
-//        let t0 = DispatchTime.now()
-
+        
+        //        logThumb("BATCH_START", file: "count=\(items.count)")
+        //        let batchSP = sp_thumbs_begin("ThumbsBatch", "count=\(items.count)")
+        //        let t0 = DispatchTime.now()
+        
         for img in items {
-//            logThumb("THUMB_START", file: img.fileName)
-//            let sp = sp_thumbs_begin("Thumb", img.fileName)
-
+            //            logThumb("THUMB_START", file: img.fileName)
+            //            let sp = sp_thumbs_begin("Thumb", img.fileName)
+            
             await img.startThumbnailGeneration()
-
-//            sp_thumbs_end("Thumb", sp)
-//            logThumb("THUMB_DONE", file: img.fileName)
+            
+            //            sp_thumbs_end("Thumb", sp)
+            //            logThumb("THUMB_DONE", file: img.fileName)
         }
-
-//        sp_thumbs_end("ThumbsBatch", batchSP)
-//        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000_000
-//        logThumb("BATCH_DONE", file: "count=\(items.count)", note: "time=\(String(format: "%.2f", dt))s, mode=serial")
+        
+        //        sp_thumbs_end("ThumbsBatch", batchSP)
+        //        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000_000
+        //        logThumb("BATCH_DONE", file: "count=\(items.count)", note: "time=\(String(format: "%.2f", dt))s, mode=serial")
     }
-
+    
     
     // MARK: - Image Selection
     
@@ -152,6 +171,23 @@ class MainViewModel {
         
         // Genera preview automaticamente
         await generatePreview()
+        
+        refreshMeasuredHeadroom()
+        
+    }
+    
+    func refreshMeasuredHeadroom() {
+        Task { @MainActor in
+            guard let url = self.selectedImage?.url else { return }
+            do {
+                let raw = try processor.computeMeasuredHeadroomRaw(url: url)
+                self.measuredHeadroomRaw = raw
+                self.measuredHeadroom = max(1.0, raw)
+            } catch {
+                self.measuredHeadroomRaw = 1.0
+                self.measuredHeadroom   = 1.0
+            }
+        }
     }
     
     // MARK: - Preview Generation
@@ -170,7 +206,7 @@ class MainViewModel {
         self.previewError = nil
         self.currentPreview = nil
         self.clippingStats = nil
-
+        
         do {
             // ⬇️ usa l’overload con callback: niente più ricalcolo separato
             let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total in
@@ -182,15 +218,15 @@ class MainViewModel {
                     }
                 }
             }
-
+            
             self.currentPreview = preview
             self.isLoadingPreview = false
-
+            
             // (opzionale) log rapido
             if let s = self.clippingStats {
                 print("Clipping full-res: \(s.clipped)/\(s.total) = \(Double(s.clipped) / Double(s.total) * 100)%")
             }
-
+            
         } catch {
             self.isLoadingPreview = false
             self.previewError = error.localizedDescription
@@ -228,36 +264,36 @@ class MainViewModel {
     //        }
     //    }
     
-    /// Refresh preview (chiamato quando l'utente cambia settings)
+    /// Refresh preview (chiamato quando l'utente cambia settings manualmente)
     func refreshPreview() {
         Task {
+//            let t0 = tnow()
+//            logUI("manual refresh (showClipped=\(currentShowClipped)) — calling generatePreview()")
             await generatePreview()
+//            logUI("manual refresh done in \(ms(t0))")
         }
     }
-    
+
     /// Refresh preview con debounce (per auto-refresh)
     /// Cancella il task precedente se ancora in attesa
     func debouncedRefreshPreview() {
-        // Cancella il task precedente se esiste
+        // cancella task precedente
         refreshTask?.cancel()
-        
-        // Setta isLoadingPreview SUBITO (per feedback visivo immediato)
-        // NON verrà resettato fino al completamento del refresh
+
+        // feedback immediato
         isLoadingPreview = true
-        
-        // Crea nuovo task con delay
+
+//        let tRequest = tnow()
+//        logUI("debounced request received (showClipped=\(currentShowClipped))")
+
         refreshTask = Task {
-            // Aspetta il debounce interval
             try? await Task.sleep(for: .milliseconds(Int(refreshDebounceInterval * 1000)))
-            
-            // Se il task è stato cancellato, NON resettare isLoadingPreview
-            // (verrà resettato dal prossimo task o dal completamento)
-            guard !Task.isCancelled else {
-                return  // ← RIMOSSO il reset di isLoadingPreview qui
-            }
-            
-            // Esegui il refresh (generatePreview gestirà isLoadingPreview)
+            guard !Task.isCancelled else { return }
+
+//            logUI("debounce fired after \(ms(tRequest)) — calling generatePreview()")
+//            let tGen = tnow()
             await generatePreview()
+//            logUI("generatePreview() returned in \(ms(tGen)) • total since request \(ms(tRequest))")
         }
     }
     
@@ -322,7 +358,7 @@ class MainViewModel {
         // Batch signpost + timer
         //        logExportEvent("BATCH_START", file: "count=\(images.count)")
         //        let batchSP = sp_begin("Batch", "count=\(images.count)")
-//        let t0 = DispatchTime.now()
+        //        let t0 = DispatchTime.now()
         
         for (index, image) in images.enumerated() {
             exportCurrentFile = image.fileName
@@ -369,8 +405,8 @@ class MainViewModel {
         
         // Batch end
         //        sp_end("Batch", batchSP)
-//        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000_000
-//        let summary = "ok=\(succeeded.count) fail=\(failed.count) skip=\(skipped.count) time=\(String(format: "%.2f", dt))s"
+        //        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000_000
+        //        let summary = "ok=\(succeeded.count) fail=\(failed.count) skip=\(skipped.count) time=\(String(format: "%.2f", dt))s"
         //        logExportEvent("BATCH_DONE", file: summary)
         
         // Summary UI

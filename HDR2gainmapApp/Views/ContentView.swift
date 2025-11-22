@@ -2,8 +2,11 @@ import SwiftUI
 
 struct ContentView: View {
     @State private var viewModel = MainViewModel()
-    
+
     var body: some View {
+        // Rebinding Observation → abilita $viewModel.* in questa view
+        @Bindable var viewModel = viewModel
+
         Group {
             if viewModel.images.isEmpty {
                 // Schermata iniziale: folder selection
@@ -23,29 +26,35 @@ struct ContentView: View {
                 ExportSummaryView(results: results)
             }
         }
+        .onAppear {
+            // Se avvii con un’immagine già selezionata, misura subito l’headroom
+            if viewModel.selectedImage != nil {
+                viewModel.refreshMeasuredHeadroom()
+            }
+        }
     }
 }
 
 // MARK: - Folder Selection View
 
 struct FolderSelectionView: View {
-    let viewModel: MainViewModel
-    
+    @Bindable var viewModel: MainViewModel   // ← era `let`, ora osserva i cambi
+
     var body: some View {
         VStack(spacing: 30) {
             Image(systemName: "photo.stack")
                 .font(.system(size: 80))
                 .foregroundStyle(.secondary)
-            
+
             Text("HDR to Gain Map Converter")
                 .font(.largeTitle)
                 .fontWeight(.bold)
-            
+
             Text("Select a folder containing HDR PNG images to get started")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            
+
             Button(action: {
                 viewModel.selectInputFolder()
             }) {
@@ -63,31 +72,31 @@ struct FolderSelectionView: View {
 // MARK: - Main Interface View
 
 struct MainInterfaceView: View {
-    let viewModel: MainViewModel
-    
+    @Bindable var viewModel: MainViewModel   // ← era `let`, ora osserva i cambi
+
     var body: some View {
-        HStack(spacing: 0) {  // ← CAMBIATO: usa HStack invece di VStack con overlay
+        HStack(spacing: 0) {
             // Parte sinistra: Preview + Thumbnail bar
             VStack(spacing: 0) {
                 // Preview pane (centro)
                 PreviewPane(viewModel: viewModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                
+
                 Divider()
-                
+
                 // Thumbnail bar (basso)
                 ThumbnailBar(viewModel: viewModel)
                     .frame(height: 140)
             }
-            
+
             Divider()
-            
-            // Control panel (destra) - ora affiancato, non sovrapposto
+
+            // Control panel (destra)
             ControlPanel(viewModel: viewModel)
                 .frame(width: 300)
         }
         .overlay {
-            // Export progress overlay (questo sì che deve stare sopra tutto)
+            // Export progress overlay (sopra tutto)
             if viewModel.isExporting {
                 ExportProgressView(
                     progress: viewModel.exportProgress,

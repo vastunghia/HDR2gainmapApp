@@ -115,7 +115,7 @@ class HDRImage: Identifiable {
     }
     
     private func loadThumbnailAsync() async {
-        let startTime = Date()
+//        let startTime = Date()
 //        print("🔄 START thumbnail generation for: \(fileName)")
         
         // Usa QuickLook Thumbnailing per thumbnails veloci e ottimizzate
@@ -136,7 +136,7 @@ class HDRImage: Identifiable {
                 self.thumbnailImage = thumbnail.nsImage
             }
             
-            let elapsed = Date().timeIntervalSince(startTime)
+//            let elapsed = Date().timeIntervalSince(startTime)
 //            print("✅ DONE thumbnail generation for: \(fileName) (took \(String(format: "%.2f", elapsed))s)")
             
         } catch {

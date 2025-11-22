@@ -13,7 +13,7 @@ func formatPercentTwoSig(_ pct: Double) -> String {
 }
 
 struct ControlPanel: View {
-    let viewModel: MainViewModel
+    @Bindable var viewModel: MainViewModel
     
     var body: some View {
         ScrollView {
@@ -34,12 +34,7 @@ struct ControlPanel: View {
                             get: { selectedImage.settings },
                             set: { selectedImage.settings = $0 }
                         ),
-                        viewModel: viewModel,
-                        onSettingsChange: {
-                            if viewModel.autoRefreshPreview {
-                                viewModel.debouncedRefreshPreview()
-                            }
-                        }
+                        viewModel: viewModel
                     )
                     
                     Divider()
@@ -136,7 +131,7 @@ struct PreviewUpdatesSection: View {
 struct OverlaySection: View {
     @Binding var settings: ProcessingSettings
     let viewModel: MainViewModel
-    let onSettingsChange: () -> Void
+//    let onSettingsChange: () -> Void
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -144,28 +139,28 @@ struct OverlaySection: View {
                 .font(.headline)
             
             Toggle("Show clipped pixels", isOn: $settings.showClippedOverlay)
-                .toggleStyle(.switch)
                 .disabled(!viewModel.isCurrentImageValid)
-                .onChange(of: settings.showClippedOverlay) {
-                    onSettingsChange()
+                .onChange(of: settings.showClippedOverlay) {     // ← zero-parameter closure
+                    // NIENTE debouncedRefresh qui: andiamo diretti
+                    viewModel.refreshPreview()
                 }
             
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Overlay Color")
-                    .font(.caption)
-                    .foregroundStyle(settings.showClippedOverlay && viewModel.isCurrentImageValid ? .secondary : .tertiary)
-                
-                Picker("Color", selection: $settings.overlayColor) {
-                    Text("Magenta").tag("magenta")
-                    Text("Red").tag("red")
-                    Text("Violet").tag("violet")
-                }
-                .pickerStyle(.segmented)
-                .disabled(!settings.showClippedOverlay || !viewModel.isCurrentImageValid)  // ← MODIFICA
-                .onChange(of: settings.overlayColor) {
-                    onSettingsChange()
-                }
-            }
+//            VStack(alignment: .leading, spacing: 8) {
+//                Text("Overlay Color")
+//                    .font(.caption)
+//                    .foregroundStyle(settings.showClippedOverlay && viewModel.isCurrentImageValid ? .secondary : .tertiary)
+//                
+//                Picker("Color", selection: $settings.overlayColor) {
+//                    Text("Magenta").tag("magenta")
+//                    Text("Red").tag("red")
+//                    Text("Violet").tag("violet")
+//                }
+//                .pickerStyle(.segmented)
+//                .disabled(!settings.showClippedOverlay || !viewModel.isCurrentImageValid)  // ← MODIFICA
+//                .onChange(of: settings.overlayColor) {
+//                    onSettingsChange()
+//                }
+//            }
         }
         .padding(.horizontal)
     }
@@ -191,22 +186,45 @@ struct TonemapMethodSection: View {
             .pickerStyle(.segmented)
             .disabled(!viewModel.isCurrentImageValid)
             .onChange(of: settings.method) {
-                onSettingsChange()
+                if viewModel.autoRefreshPreview {
+                    viewModel.refreshPreview() // ← immediato, niente debounce
+                }
             }
             
             // Parameters based on selected method
             switch settings.method {
             case .peakMax:
-                PeakMaxControls(settings: $settings, onSettingsChange: onSettingsChange, isDisabled: !viewModel.isCurrentImageValid)
+                PeakMaxControls(
+                    settings: $settings,
+                    onSettingsChange: onSettingsChange,
+                    isDisabled: !viewModel.isCurrentImageValid
+                )
             case .percentile:
-                PercentileControls(settings: $settings, onSettingsChange: onSettingsChange, isDisabled: !viewModel.isCurrentImageValid)
+                PercentileControls(
+                    settings: $settings,
+                    onSettingsChange: onSettingsChange,
+                    isDisabled: !viewModel.isCurrentImageValid
+                )
+            case .direct:
+                DirectControls(
+                    settings: $settings,
+                    measuredHeadroom: viewModel.measuredHeadroom,
+                    onSettingsChange: onSettingsChange, // slider → debounce
+                    onImmediateChange: {
+                        if viewModel.autoRefreshPreview {
+                            viewModel.refreshPreview()   // reset → immediato
+                        }
+                    },
+                    isDisabled: !viewModel.isCurrentImageValid
+                )
             }
-            // Clipping stats line
+            
+            // Clipping stats line (aggiungo “(maxRGB)” per chiarezza)
             Group {
                 if viewModel.isCurrentImageValid, let stats = viewModel.clippingStats, stats.total > 0 {
                     let pct = (Double(stats.clipped) / Double(stats.total)) * 100.0
                     HStack(spacing: 6) {
-                        Text("Number of pixels clipped:")
+                        Text("Number of pixels clipped (maxRGB):")
                             .foregroundStyle(.secondary)
                         Text("\(stats.clipped.formatted()) (\(formatPercentTwoSig(pct)))")
                             .fontWeight(.medium)
@@ -218,7 +236,7 @@ struct TonemapMethodSection: View {
                     .transition(.opacity)
                 } else {
                     HStack(spacing: 6) {
-                        Text("Number of pixels clipped: – (–)")
+                        Text("Number of pixels clipped (maxRGB): – (–)")
                             .foregroundStyle(.tertiary)
                         Spacer()
                     }
@@ -227,7 +245,6 @@ struct TonemapMethodSection: View {
                     .transition(.opacity)
                 }
             }
-
         }
         .padding(.horizontal)
     }
@@ -293,7 +310,7 @@ struct PercentileControls: View {
     ]
     
     // Debug state
-    @State private var debugTask: Task<Void, Never>?
+//    @State private var debugTask: Task<Void, Never>?
     
     // Conversione da percentile a slider position (funzione inversa)
     private var sliderPosition: Double {
@@ -454,6 +471,86 @@ struct PercentileControls: View {
             Text("Uses histogram-based peak detection for robust headroom calculation")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Direct Controls
+
+struct DirectControls: View {
+    @Binding var settings: ProcessingSettings
+    let measuredHeadroom: Float
+    let onSettingsChange: () -> Void
+    let onImmediateChange: () -> Void
+    let isDisabled: Bool
+    
+    private var maxLimit: Float {
+        let real = max(1.0, measuredHeadroom)
+        return real * 2.0
+    }
+    private func fmt(_ v: Float) -> String { String(format: "%.3f", v) }
+    
+    // Binding che mappa gli opzionali su default sensati
+    private var sourceBinding: Binding<Float> {
+        Binding(
+            get: { settings.directSourceHeadroom ?? max(1.0, measuredHeadroom) },
+            set: { settings.directSourceHeadroom = $0; onSettingsChange() }
+        )
+    }
+    private var targetBinding: Binding<Float> {
+        Binding(
+            get: { settings.directTargetHeadroom ?? 1.0 },
+            set: { settings.directTargetHeadroom = $0; onSettingsChange() }
+        )
+    }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+//            // Info riga
+//            Text("Measured source headroom: \(fmt(max(1.0, measuredHeadroom)))  •  Max allowed: \(fmt(maxLimit))")
+//                .font(.caption)
+//                .foregroundStyle(.secondary)
+//            
+            // Slider: input source headroom
+            HStack {
+                Text("Input source headroom")
+                    .font(.subheadline)
+                Spacer()
+                Text(fmt(sourceBinding.wrappedValue))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: sourceBinding, in: 0...maxLimit)/*, step: 0.001)*/
+                .disabled(isDisabled)
+            
+            // Slider: target headroom
+            HStack {
+                Text("Target headroom")
+                    .font(.subheadline)
+                Spacer()
+                Text(fmt(targetBinding.wrappedValue))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            Slider(value: targetBinding, in: 0...maxLimit)/*, step: 0.001)*/
+                .disabled(isDisabled)
+            
+            HStack(spacing: 12) {
+                Button("Reset defaults") {
+                    settings.resetDirectDefaults(measuredHeadroom: max(1.0, measuredHeadroom))
+                    onImmediateChange() // ← immediato, niente debounce
+                }
+                .disabled(isDisabled)
+                
+                Spacer()
+                Text("Maps directly to CIToneMapHeadroom parameters.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.top, 4)
         }
         .padding(.vertical, 4)
     }
