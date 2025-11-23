@@ -29,22 +29,6 @@ class ProcessingSettings {  // class (non struct) come da tua base
     /// Se nil, usa default dinamici (target = 1.0)
     var directTargetHeadroom: Float? = nil
 
-    /// Restituisce la coppia (source,target) già “risolta” e clampata
-    /// in base all’headroom reale misurato sull’immagine
-//    func resolvedDirectHeadrooms(measuredHeadroom: Float) -> (source: Float, target: Float) {
-//        let real = max(1.0, measuredHeadroom)
-//        let maxLimit = real * 2.0
-//
-//        // default intelligenti
-//        let src = directSourceHeadroom ?? real
-//        let dst = directTargetHeadroom ?? 1.0
-//
-//        // clamp a [0, 2.0×real]
-//        let clampedSrc = min(max(0.0, src), maxLimit)
-//        let clampedDst = min(max(0.0, dst), maxLimit)
-//        return (clampedSrc, clampedDst)
-//    }
-
     /// Reimposta i default per Direct (comodo per un pulsante "Reset")
     func resetDirectDefaults(measuredHeadroom: Float) {
         let real = max(1.0, measuredHeadroom)

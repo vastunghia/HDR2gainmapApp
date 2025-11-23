@@ -84,7 +84,6 @@ struct PreviewPane: View {
             
             // Metadata bar
             if let selectedImage = viewModel.selectedImage {
-//                let _ = print("📊 MetadataBar rendering for: \(selectedImage.fileName) (id: \(selectedImage.id))")
                 MetadataBar(image: selectedImage, headroomRaw: viewModel.measuredHeadroomRaw)
                     .id(selectedImage.id)  // Forza refresh quando cambia immagine
             }

@@ -45,9 +45,6 @@ class MainViewModel {
     var exportResults: ExportResults?
     var showExportSummary = false
     
-    // Preview error (marca immagini non valide)
-    //    var previewError: String?
-    
     // Statistiche di clipping della preview corrente
     struct ClippingStats {
         let clipped: Int   // pixel clippati (da collegare alla tua maschera)
@@ -62,18 +59,6 @@ class MainViewModel {
         // Un'immagine è valida se è selezionata E non ha errori
         return selectedImage != nil && previewError == nil
     }
-    
-//    @inline(__always) private func tnow() -> Double { CACurrentMediaTime() }
-//    @inline(__always) private func ms(_ start: Double) -> String {
-//        String(format: "%.2f ms", (CACurrentMediaTime() - start) * 1000.0)
-//    }
-//    private func logUI(_ msg: String) {
-//        print("🧩 [UI] \(msg)")
-//    }
-//    
-//    private var currentShowClipped: Bool {
-//        selectedImage?.settings.showClippedOverlay ?? false
-//    }
     
     private let processor = HDRProcessor.shared
     
@@ -137,24 +122,10 @@ class MainViewModel {
     func loadThumbnailsInOrder() async {
         let items = self.images
         guard !items.isEmpty else { return }
-        
-        //        logThumb("BATCH_START", file: "count=\(items.count)")
-        //        let batchSP = sp_thumbs_begin("ThumbsBatch", "count=\(items.count)")
-        //        let t0 = DispatchTime.now()
-        
+
         for img in items {
-            //            logThumb("THUMB_START", file: img.fileName)
-            //            let sp = sp_thumbs_begin("Thumb", img.fileName)
-            
             await img.startThumbnailGeneration()
-            
-            //            sp_thumbs_end("Thumb", sp)
-            //            logThumb("THUMB_DONE", file: img.fileName)
         }
-        
-        //        sp_thumbs_end("ThumbsBatch", batchSP)
-        //        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000_000
-        //        logThumb("BATCH_DONE", file: "count=\(items.count)", note: "time=\(String(format: "%.2f", dt))s, mode=serial")
     }
     
     
@@ -195,9 +166,6 @@ class MainViewModel {
     // Preview error (non blocca la visualizzazione dell'immagine)
     var previewError: String?
     
-    // Fallback image quando preview fallisce
-    //    var fallbackImage: NSImage?
-    
     /// Genera preview per l'immagine selezionata con i settings correnti
     @MainActor
     func generatePreview() async {
@@ -236,41 +204,10 @@ class MainViewModel {
         }
     }
     
-    //    /// Carica immagine fallback quando preview fallisce
-    //    private func loadFallbackImage(for image: HDRImage, error: String) async {
-    //        let imageURL = image.url
-    //        let imageName = image.fileName
-    //
-    //        print("📸 Loading fallback image for: \(imageName)")
-    //
-    //        // Carica in background thread
-    //        let loadedImage = await Task.detached(priority: .userInitiated) {
-    //            NSImage(contentsOf: imageURL)
-    //        }.value
-    //
-    //        if let nsImage = loadedImage {
-    //            print("✅ Fallback image loaded successfully")
-    //            print("   Fallback image size: \(nsImage.size)")
-    //
-    //            // IMPORTANTE: Assegna tutto insieme per triggerare un singolo update
-    //            self.fallbackImage = nsImage
-    //            self.previewError = error
-    //            self.currentPreview = nil
-    //
-    //            print("   State after assignment - error: \(self.previewError != nil), fallback: \(self.fallbackImage != nil)")
-    //        } else {
-    //            print("❌ Failed to load fallback image")
-    //            self.previewError = error  // Mostra almeno l'errore
-    //        }
-    //    }
-    
     /// Refresh preview (chiamato quando l'utente cambia settings manualmente)
     func refreshPreview() {
         Task {
-//            let t0 = tnow()
-//            logUI("manual refresh (showClipped=\(currentShowClipped)) — calling generatePreview()")
             await generatePreview()
-//            logUI("manual refresh done in \(ms(t0))")
         }
     }
 
@@ -283,17 +220,10 @@ class MainViewModel {
         // feedback immediato
         isLoadingPreview = true
 
-//        let tRequest = tnow()
-//        logUI("debounced request received (showClipped=\(currentShowClipped))")
-
         refreshTask = Task {
             try? await Task.sleep(for: .milliseconds(Int(refreshDebounceInterval * 1000)))
             guard !Task.isCancelled else { return }
-
-//            logUI("debounce fired after \(ms(tRequest)) — calling generatePreview()")
-//            let tGen = tnow()
             await generatePreview()
-//            logUI("generatePreview() returned in \(ms(tGen)) • total since request \(ms(tRequest))")
         }
     }
     
@@ -355,25 +285,13 @@ class MainViewModel {
             return
         }
         
-        // Batch signpost + timer
-        //        logExportEvent("BATCH_START", file: "count=\(images.count)")
-        //        let batchSP = sp_begin("Batch", "count=\(images.count)")
-        //        let t0 = DispatchTime.now()
-        
         for (index, image) in images.enumerated() {
             exportCurrentFile = image.fileName
-            
-            // PREVIEW (validazione)
-            //            logExportEvent("PREVIEW_START", file: image.fileName)
-            //            let sp1 = sp_begin("Preview", image.fileName)
+
             var isValid = true
             do {
                 _ = try await processor.generatePreview(for: image)
-                //                sp_end("Preview", sp1)
-                //                logExportEvent("PREVIEW_DONE", file: image.fileName)
             } catch {
-                //                sp_end("Preview", sp1)
-                //                logExportEvent("PREVIEW_SKIP", file: image.fileName, note: error.localizedDescription)
                 isValid = false
                 skipped.append(image.fileName)
             }
@@ -384,17 +302,10 @@ class MainViewModel {
                     .appendingPathComponent(image.fileName)
                     .appendingPathExtension("heic")
                 try? FileManager.default.removeItem(at: outputURL)
-                
-                //                logExportEvent("EXPORT_START", file: image.fileName)
-                //                let sp2 = sp_begin("Export", image.fileName)
                 do {
                     try await processor.exportImage(image, to: outputURL)
-                    //                    sp_end("Export", sp2)
-                    //                    logExportEvent("EXPORT_DONE", file: image.fileName)
                     succeeded.append(image.fileName)
                 } catch {
-                    //                    sp_end("Export", sp2)
-                    //                    logExportEvent("EXPORT_FAIL", file: image.fileName, note: error.localizedDescription)
                     failed.append((image.fileName, error.localizedDescription))
                 }
             }
@@ -402,12 +313,6 @@ class MainViewModel {
             // progress
             exportProgress = Double(index + 1) / Double(totalCount)
         }
-        
-        // Batch end
-        //        sp_end("Batch", batchSP)
-        //        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0.uptimeNanoseconds) / 1_000_000_000
-        //        let summary = "ok=\(succeeded.count) fail=\(failed.count) skip=\(skipped.count) time=\(String(format: "%.2f", dt))s"
-        //        logExportEvent("BATCH_DONE", file: summary)
         
         // Summary UI
         isExporting = false

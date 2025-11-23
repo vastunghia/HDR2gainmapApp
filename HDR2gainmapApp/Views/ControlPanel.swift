@@ -144,23 +144,6 @@ struct OverlaySection: View {
                     // NIENTE debouncedRefresh qui: andiamo diretti
                     viewModel.refreshPreview()
                 }
-            
-//            VStack(alignment: .leading, spacing: 8) {
-//                Text("Overlay Color")
-//                    .font(.caption)
-//                    .foregroundStyle(settings.showClippedOverlay && viewModel.isCurrentImageValid ? .secondary : .tertiary)
-//                
-//                Picker("Color", selection: $settings.overlayColor) {
-//                    Text("Magenta").tag("magenta")
-//                    Text("Red").tag("red")
-//                    Text("Violet").tag("violet")
-//                }
-//                .pickerStyle(.segmented)
-//                .disabled(!settings.showClippedOverlay || !viewModel.isCurrentImageValid)  // ← MODIFICA
-//                .onChange(of: settings.overlayColor) {
-//                    onSettingsChange()
-//                }
-//            }
         }
         .padding(.horizontal)
     }
@@ -309,9 +292,6 @@ struct PercentileControls: View {
         (1.0, "99.999%")
     ]
     
-    // Debug state
-//    @State private var debugTask: Task<Void, Never>?
-    
     // Conversione da percentile a slider position (funzione inversa)
     private var sliderPosition: Double {
         let percentileDouble = Double(settings.percentile)
@@ -348,13 +328,11 @@ struct PercentileControls: View {
         // Gestisci esplicitamente gli estremi per evitare problemi di precisione Float
         if s <= 0.0 {
             settings.percentile = Float(minP)
-//            scheduleDebugLog(originalS: s, clampedS: 0.0, percentile: minP)
             return
         }
         
         if s >= 1.0 {
             settings.percentile = Float(maxP)
-//            scheduleDebugLog(originalS: s, clampedS: 1.0, percentile: maxP)
             return
         }
         
@@ -370,49 +348,7 @@ struct PercentileControls: View {
         // Clamp result per evitare valori fuori range
         settings.percentile = Float(min(max(percentile, minP), maxP))
         
-        // Debug logging con delay
-//        scheduleDebugLog(originalS: s, clampedS: s, percentile: percentile)
     }
-    
-//    private func scheduleDebugLog(originalS: Double, clampedS: Double, percentile: Double) {
-//        // Cancella il task precedente
-//        debugTask?.cancel()
-//        
-//        // Crea nuovo task con delay di 1 secondo
-//        debugTask = Task { @MainActor in
-//            try? await Task.sleep(for: .seconds(1))
-//            
-//            guard !Task.isCancelled else { return }
-//            
-//            // Ricalcola la posizione corrente per vedere il round-trip
-//            let currentSliderPos = sliderPosition
-//            
-//            print("=== PERCENTILE SLIDER DEBUG ===")
-//            print("Input from slider:")
-//            print("  - Original s: \(originalS)")
-//            print("  - Clamped s: \(clampedS)")
-//            print("  - s == 1.0? \(originalS == 1.0)")
-//            print("")
-//            print("Conversion to percentile:")
-//            print("  - Calculated percentile: \(percentile)")
-//            print("  - Min percentile (minP): \(minP)")
-//            print("  - Max percentile (maxP): \(maxP)")
-//            print("  - Clamped to range: \(min(max(percentile, minP), maxP))")
-//            print("  - Stored as Float: \(settings.percentile)")
-//            print("")
-//            print("Round-trip back to slider:")
-//            print("  - Current sliderPosition: \(currentSliderPos)")
-//            print("  - Difference from input: \(abs(currentSliderPos - originalS))")
-//            print("  - Is at max (1.0)? \(currentSliderPos == 1.0)")
-//            print("")
-//            print("Percentile details:")
-//            print("  - Display value: \(String(format: "%.5f%%", settings.percentile * 100))")
-//            print("  - Raw Float: \(settings.percentile)")
-//            print("  - As Double: \(Double(settings.percentile))")
-//            print("  - Distance from maxP: \(maxP - Double(settings.percentile))")
-//            print("===============================\n")
-//        }
-//    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -507,11 +443,6 @@ struct DirectControls: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-//            // Info riga
-//            Text("Measured source headroom: \(fmt(max(1.0, measuredHeadroom)))  •  Max allowed: \(fmt(maxLimit))")
-//                .font(.caption)
-//                .foregroundStyle(.secondary)
-//            
             // Slider: input source headroom
             HStack {
                 Text("Input source headroom")

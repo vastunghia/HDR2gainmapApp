@@ -30,22 +30,6 @@ class HDRProcessor {
         let k = url.absoluteString + "|" + previewSettingsFingerprint(settings)
         return NSString(string: k)
     }
-    
-    // ===== DEBUG PREVIEW CACHE =====
-//    private let DEBUG_PREVIEW_CACHE = true
-
-//    @inline(__always)
-//    private func tnow() -> Double { CACurrentMediaTime() }
-
-//    @inline(__always)
-//    private func ms(_ start: Double) -> String {
-//        String(format: "%.2f ms", (tnow() - start) * 1000.0)
-//    }
-
-//    private func logPreview(_ msg: String) {
-//        guard DEBUG_PREVIEW_CACHE else { return }
-//        print("🧩 [Preview] \(msg)")
-//    }
 
     /// Load HDR once, validate source colorspace, then materialize into a RAM-backed CIImage.
     /// Throws ProcessingError.invalidColorSpace if the file isn't the expected HDR CS.
@@ -86,41 +70,6 @@ class HDRProcessor {
         return residentCI
     }
     
-//    func loadHDRForMeasure(url: URL) throws -> CIImage {
-//        try loadHDR(url: url) // la tua loadHDR() già valida CS e materializza in RAM
-//    }
-
-    /// Converts a hex string into a CIColor. Supports "#RRGGBB" and "#RRGGBBAA".
-    /// Fallback is opaque red.
-//    private func ciColor(from string: String) -> CIColor {
-//        let s = string.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-//        var hex = s
-//        if hex.hasPrefix("#") { hex.removeFirst() }
-//
-//        var v: UInt64 = 0
-//        guard Scanner(string: hex).scanHexInt64(&v) else {
-//            return CIColor(red: 1, green: 0, blue: 0, alpha: 1)
-//        }
-//
-//        switch hex.count {
-//        case 6: // RRGGBB
-//            let r = CGFloat((v & 0xFF0000) >> 16) / 255.0
-//            let g = CGFloat((v & 0x00FF00) >> 8)  / 255.0
-//            let b = CGFloat( v & 0x0000FF)        / 255.0
-//            return CIColor(red: r, green: g, blue: b, alpha: 1)
-//
-//        case 8: // RRGGBBAA
-//            let r = CGFloat((v & 0xFF000000) >> 24) / 255.0
-//            let g = CGFloat((v & 0x00FF0000) >> 16) / 255.0
-//            let b = CGFloat((v & 0x0000FF00) >> 8)  / 255.0
-//            let a = CGFloat( v & 0x000000FF)        / 255.0
-//            return CIColor(red: r, green: g, blue: b, alpha: a)
-//
-//        default:
-//            return CIColor(red: 1, green: 0, blue: 0, alpha: 1)
-//        }
-//    }
-    
     static let shared = HDRProcessor()
     
     private let linear_p3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
@@ -157,18 +106,13 @@ class HDRProcessor {
 
         let baseKey = previewKey(url: image.url, settings: image.settings)
         let wantOverlay = image.settings.showClippedOverlay
-//        let t0 = tnow()
-//        logPreview("BEGIN key='\(baseKey)' wantOverlay=\(wantOverlay)")
 
         // 1) HIT overlay?
         if wantOverlay, let cachedOverlay = previewOverlayCache.object(forKey: baseKey) {
-//            let tHit = ms(t0)
             if let ct = previewCountsCache.object(forKey: baseKey) as? [String: Int],
                let c = ct["c"], let t = ct["t"] {
-//                logPreview("HIT overlay • counts=\(c)/\(t) • \(tHit)")
                 reportClipping?(c, t)
             } else {
-//                logPreview("HIT overlay (no counts) • \(tHit)")
                 reportClipping?(0, 0)
             }
             return try ciImageToNSImage(cachedOverlay)
@@ -176,13 +120,11 @@ class HDRProcessor {
 
         // 2) HIT base?
         if !wantOverlay, let cachedBase = previewBaseCache.object(forKey: baseKey) {
-//            logPreview("HIT base • \(ms(t0))")
             reportClipping?(0, 0)
             return try ciImageToNSImage(cachedBase)
         }
 
         // 3) MISS → tonemap
-//        let tTonemap0 = tnow()
         let hdr = try loadHDR(url: image.url)
         let derivedHeadroom: Float = try await calculateHeadroom(hdr: hdr, settings: image.settings)
 
@@ -205,26 +147,21 @@ class HDRProcessor {
             sdrBase = s
         }
 
-//        logPreview("MISS base → TONEMAP done • \(ms(tTonemap0))")
         previewBaseCache.setObject(sdrBase, forKey: baseKey)
 
         // 4) Se non serve overlay, ritorna
         if !wantOverlay {
-//            logPreview("RETURN base (cached) • TOTAL \(ms(t0))")
             reportClipping?(0, 0)
             return try ciImageToNSImage(sdrBase)
         }
 
         // 5) Serve overlay → costruiscilo dalla base
-//        let tOverlay0 = tnow()
         if let r = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3) {
             previewOverlayCache.setObject(r.imageWithOverlay, forKey: baseKey)
             previewCountsCache.setObject(["c": r.clipped, "t": r.total] as NSDictionary, forKey: baseKey)
-//            logPreview("BUILD overlay (from base) • build=\(ms(tOverlay0)) • TOTAL \(ms(t0)) • counts=\(r.clipped)/\(r.total)")
             reportClipping?(r.clipped, r.total)
             return try ciImageToNSImage(r.imageWithOverlay)
         } else {
-//            logPreview("OVERLAY FAILED → return base • TOTAL \(ms(t0))")
             reportClipping?(0, 0)
             return try ciImageToNSImage(sdrBase)
         }
@@ -316,34 +253,7 @@ class HDRProcessor {
         }
     }
     
-    // MARK: - Private Helpers
-    
     // MARK: - Headroom
-
-//    private func calculateHeadroom(hdr: CIImage, settings: ProcessingSettings) async throws -> Float {
-//        let metric = AppPrefs.clippingMetric  // .luminance o .anyChannel (maxRGB)
-//
-//        switch settings.method {
-//        case .peakMax:
-//            // Peak sulla metrica scelta (Y o maxRGB)
-//            let peak = peakForMetric(hdr, metric: metric, context: ctx_linear_p3)
-//            // ratio = 0 -> headroom = max(1, peak_metric) -> 0 clip nella stessa metrica
-//            // ratio = 1 -> headroom = 1
-//            return max(1.0, 1.0 + peak - powf(peak, settings.tonemapRatio))
-//
-//        case .percentile:
-//            guard let headroom = percentileHeadroomForMetric(
-//                hdr,
-//                metric: metric,
-//                bins: 2048,
-//                percentile01: Double(settings.percentile),   // settings.percentile ∈ [0,1]
-//                context: ctx_linear_p3
-//            ) else {
-//                throw ProcessingError.headroomCalculationFailed
-//            }
-//            return headroom
-//        }
-//    }
 
     /// Peak = massimo assoluto della luminanza lineare (stessa usata per la clip-mask).
     /// Usa CIAreaMaximum su linear_luma(hdr) e legge il canale R.
@@ -382,9 +292,6 @@ class HDRProcessor {
             // Non usato per il tonemap (si usa l’overload con source/target),
             // ma restituiamo un valore sensato per chiamanti generici: il "source headroom" risolto.
             let real = peakLuminanceFromLinearLuma(hdr, context: ctx_linear_p3)
-//            let maxLimit = max(1.0, real * 2.0)
-//            let src = min(max(settings.directSourceHeadroom ?? real, 0), maxLimit)
-//            return src
             return real
         }
     }
@@ -450,27 +357,6 @@ class HDRProcessor {
         return headroom.isFinite ? headroom : 1.0
     }
 
-//    // Vecchia API (se vuoi mantenerla per altri punti del codice)
-//    func addClippingOverlay(
-//        hdr: CIImage,
-//        threshold_headroom: Float,
-//        overlayColor: CIColor,
-//        context: CIContext
-//    ) -> CIImage? {
-//        addClippingOverlayAndCount(hdr: hdr,
-//                                   threshold_headroom: threshold_headroom,
-//                                   overlayColor: overlayColor,
-//                                   context: context)?.imageWithOverlay
-//    }
-    
-    // Misura il peak Y (headroom reale) per il file dato
-//    @MainActor
-//    func computeMeasuredHeadroom(url: URL) throws -> Float {
-//        let hdr = try loadHDR(url: url)  // usa la tua cache in RAM
-//        let peak = peakLuminanceFromLinearLuma(hdr, context: ctx_linear_p3)
-//        return max(1.0, peak)
-//    }
-    
     @MainActor
     func computeMeasuredHeadroomRaw(url: URL) throws -> Float {
         let hdr = try loadHDR(url: url)
@@ -478,95 +364,8 @@ class HDRProcessor {
         return peak.isFinite ? peak : 1.0
     }
     
-    // Misura il peak della luminanza (headroom reale) OFF-MAIN, senza toccare stato dell'actor.
-    // Non usa proprietà dell'istanza (contesti/CS) → safe per nonisolated.
-//    nonisolated func computeMeasuredHeadroomOffMain(url: URL) throws -> Float {
-//        // Spazi colore locali
-//        let linearP3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
-//        let hdrRequired = CGColorSpace.displayP3_PQ as String
-//
-//        // Context locale
-//        let ctx = CIContext(options: [.workingColorSpace: linearP3,
-//                                      .outputColorSpace: linearP3])
-//
-//        // 1) Carica l'immagine (file-backed) in HDR
-//        guard let fileCI = CIImage(contentsOf: url, options: [.expandToHDR: true]) else {
-//            throw ProcessingError.cannotReadHDR
-//        }
-//
-//        // 2) Valida il colorspace sorgente PQ (stessa logica della loadHDR() actor-isolated)
-//        if let name = cs_name(fileCI.colorSpace), name != hdrRequired {
-//            throw ProcessingError.invalidColorSpace(cs_name(fileCI.colorSpace))
-//        }
-//
-//        // 3) Materializza in RAM come float linear P3 per misure robuste
-//        guard let residentCG = ctx.createCGImage(fileCI, from: fileCI.extent, format: .RGBAf, colorSpace: linearP3) else {
-//            throw ProcessingError.cannotReadHDR
-//        }
-//        let residentCI = CIImage(cgImage: residentCG)
-//
-//        // 4) Luma lineare e massimo via CIAreaMaximum
-//        let y = linear_luma(residentCI)
-//        let f = CIFilter(name: "CIAreaMaximum",
-//                         parameters: [kCIInputImageKey: y,
-//                                      kCIInputExtentKey: CIVector(cgRect: y.extent)])!
-//        let out = f.outputImage!
-//
-//        var px = [Float](repeating: 0, count: 4)
-//        ctx.render(out,
-//                   toBitmap: &px,
-//                   rowBytes: MemoryLayout<Float>.size * 4,
-//                   bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-//                   format: .RGBAf,
-//                   colorSpace: nil)
-//
-//        let peak = px[0]
-//        return max(1.0, peak.isFinite ? peak : 1.0)
-//    }
-    
-    // MARK: - Overlay + count (nuovo)
+    // MARK: - Overlay + count
 
-    /// Build the clipping overlay over the SDR image and also return (clipped,total) at full-res.
-//    func addClippingOverlayAndCount(
-//        hdr: CIImage,
-//        sdr: CIImage,
-////        headroom: Float,
-//        overlayColor: CIColor,
-//        context: CIContext
-//    ) -> (imageWithOverlay: CIImage, clipped: Int, total: Int)? {
-//
-//        // 1) Costruisci la mask dall’SDR tonemappata, in metrica maxRGB
-//        let mono = monoMaxRGB(from: sdr)
-//        let threshold: Float = 1.0       // limite SDR
-//        let eps: Float = 1e-6            // tolleranza numerica
-//
-//        guard let binary = build_clip_binary_mask(from: mono, threshold: threshold, epsilon: eps) else {
-//            return nil
-//        }
-//
-//        // 2) Conteggio super-rapido via CIAreaAverage (media di R=0/1 → frazione)
-//        let (clipped, total) = clippedCountViaAreaAverage(binaryMaskR: binary, context: context)
-//
-//        // 3) Usa il canale ALPHA come mask per il blend (alpha := R)
-//        let toAlpha = CIFilter.colorMatrix()
-//        toAlpha.inputImage = binary
-//        toAlpha.rVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-//        toAlpha.gVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-//        toAlpha.bVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-//        toAlpha.aVector = CIVector(x: 1, y: 0, z: 0, w: 0)
-//        guard let alphaMask = toAlpha.outputImage else { return nil }
-//
-//        let tint = CIImage(color: overlayColor).cropped(to: sdr.extent)
-//        guard let composited = CIFilter(name: "CIBlendWithAlphaMask",
-//                                        parameters: [
-//                                          kCIInputImageKey: tint,
-//                                          kCIInputBackgroundImageKey: sdr,
-//                                          kCIInputMaskImageKey: alphaMask
-//                                        ])?.outputImage else { return nil }
-//
-//        return (composited, clipped, total)
-//    }
-    
     /// Overlay multicolore dei pixel clippati su SDR (maxRGB > 1):
     /// - rosso/verde/blu: clip solo di R / G / B
     /// - giallo/magenta/ciano: clip di 2 canali
@@ -737,33 +536,6 @@ class HDRProcessor {
                 return Double(px[0].isFinite ? px[0] : 0)
             }
             func pct(_ x: Double) -> String { String(format: "%.3f%%", x * 100.0) }
-
-//            // Frazioni
-//            let f_any   = fraction(anyMask, ctx: context)       // maxRGB clipped
-//            let f_y     = fraction(yMask,   ctx: context)       // Y≥1
-//
-//            let f_or_b  = fraction(onlyR_bright, ctx: context)
-//            let f_or_d  = fraction(onlyR_dim,    ctx: context)
-//            let f_og_b  = fraction(onlyG_bright, ctx: context)
-//            let f_og_d  = fraction(onlyG_dim,    ctx: context)
-//            let f_ob_b  = fraction(onlyB_bright, ctx: context)
-//            let f_ob_d  = fraction(onlyB_dim,    ctx: context)
-//
-//            let f_rg_b  = fraction(rg_bright, ctx: context)
-//            let f_rg_d  = fraction(rg_dim,    ctx: context)
-//            let f_rb_b  = fraction(rb_bright, ctx: context)
-//            let f_rb_d  = fraction(rb_dim,    ctx: context)
-//            let f_gb_b  = fraction(gb_bright, ctx: context)
-//            let f_gb_d  = fraction(gb_dim,    ctx: context)
-//
-//            let f_all3  = fraction(all3, ctx: context)
-//
-//            // Log compatto a righe
-//            print("— Clip breakdown (by area) —")
-//            print("Total clipped (maxRGB): \(pct(f_any))   •   Y≥1: \(pct(f_y))")
-//            print("onlyR: bright \(pct(f_or_b))  dim \(pct(f_or_d))    |    onlyG: bright \(pct(f_og_b))  dim \(pct(f_og_d))    |    onlyB: bright \(pct(f_ob_b))  dim \(pct(f_ob_d))")
-//            print("RG:    bright \(pct(f_rg_b))  dim \(pct(f_rg_d))    |    RB:    bright \(pct(f_rb_b))  dim \(pct(f_rb_d))    |    GB:    bright \(pct(f_gb_b))  dim \(pct(f_gb_d))")
-//            print("RGB (all three): \(pct(f_all3))  → rendered BLACK")
         }
 
         // --- 6) Compositing a layer: bright → dim → black (all3) ------------
@@ -820,63 +592,6 @@ class HDRProcessor {
         let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: ciImage.extent.width, height: ciImage.extent.height))
         return nsImage
     }
-    
-//    /// Conta i pixel clippati sull'immagine **alla risoluzione nativa** (quella d'export),
-//    /// usando le stesse impostazioni/tonemap della preview/export.
-//    /// Ritorna (clipped, total) oppure nil in caso di problemi.
-//    func computeClippingStatsFullRes(for image: HDRImage) async -> (clipped: Int, total: Int)? {
-//        guard let hdr = CIImage(contentsOf: image.url, options: [.expandToHDR: true]) else { return nil }
-//
-//        let headroom: Float
-//        do {
-//            headroom = try await calculateHeadroom(hdr: hdr, settings: image.settings)
-//        } catch {
-//            return nil
-//        }
-//
-//        guard let mask = build_clip_mask_image_no_kernel(hdr: hdr, threshold_headroom: headroom) else {
-//            return nil
-//        }
-//
-//        let w = Int(mask.extent.width.rounded())
-//        let h = Int(mask.extent.height.rounded())
-//        guard w > 0, h > 0 else { return nil }
-//
-//        // ⬇️ Usa il conteggio su RGBA8 (non A8)
-//        let clipped = countNonZeroPixelsRGBA8(mask, width: w, height: h, context: ctx_linear_p3)
-//        let total = w * h
-//        return (clipped, total)
-//    }
-
-    /// Renderizza la mask in RGBA8 e conta i pixel con canale R > 0.
-    /// (Per mask mono, R=G=B; l'alpha della mask è tipicamente 255 ovunque.)
-//    private func countNonZeroPixelsRGBA8(_ image: CIImage, width: Int, height: Int, context: CIContext) -> Int {
-//        let rowBytes = width * 4
-//        var buffer = [UInt8](repeating: 0, count: rowBytes * height)
-//
-//        context.render(
-//            image,
-//            toBitmap: &buffer,
-//            rowBytes: rowBytes,
-//            bounds: CGRect(x: 0, y: 0, width: width, height: height),
-//            format: .RGBA8,
-//            colorSpace: CGColorSpaceCreateDeviceRGB()
-//        )
-//
-//        var count = 0
-//        var i = 0
-//        // RGBA8 → [R,G,B,A] per pixel
-//        for _ in 0..<height {
-//            for _ in 0..<width {
-//                let r = buffer[i]
-//                if r > 0 { count += 1 }    // oppure: if r >= 128 { … } per soglia dura
-//                i += 4
-//            }
-//        }
-//        return count
-//    }
-
-    
 }
 
 // MARK: - Errors

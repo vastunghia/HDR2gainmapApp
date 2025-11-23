@@ -7,7 +7,6 @@ struct HDR2gainmapApp: App {
             ContentView()   // la tua view principale
         }
 
-        // <-- AGGIUNGI QUESTO BLOCCO
         Settings {
             PreferencesView()
         }

@@ -11,17 +11,7 @@ struct PreferencesView: View {
             set: { exportMethodSelectionID = $0.rawValue }
         )
     }
-    
-//    @AppStorage("clippingMetricID")
-//    private var clippingMetricID: String = ClippingMetricChoice.luminance.rawValue
-//    
-//    private var clippingMetricBinding: Binding<ClippingMetricChoice> {
-//        Binding(
-//            get: { ClippingMetricChoice(rawValue: clippingMetricID) ?? .luminance },
-//            set: { clippingMetricID = $0.rawValue }
-//        )
-//    }
-    
+   
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
@@ -56,36 +46,10 @@ struct PreferencesView: View {
                     .foregroundStyle(.secondary)
                 }
                 .padding(14)
-//                Text("Preview").font(.title3).bold()
-//                VStack(alignment: .leading, spacing: 12) {
-//                    Text("Preview")
-//                        .font(.headline)
-//                    
-//                    VStack(alignment: .leading, spacing: 8) {
-//                        Text("Clipping metric")
-//                            .font(.subheadline)
-//                            .foregroundStyle(.secondary)
-//                        
-//                        Picker("", selection: clippingMetricBinding) {
-//                            ForEach(ClippingMetricChoice.allCases) { c in
-//                                Text(c.label).tag(c)
-//                            }
-//                        }
-//                        .pickerStyle(.segmented)
-//                        .labelsHidden()
-//                        .frame(maxWidth: 420)
-//                        
-//                        Text((ClippingMetricChoice(rawValue: clippingMetricID) ?? .luminance).help)
-//                            .font(.footnote)
-//                            .foregroundStyle(.secondary)
-//                    }
-//                }
-//                .padding(14)
                 HStack {
                     Spacer()
                     Button("Reset defaults") {
                         exportMethodSelectionID = ExportMethodChoice.heif.rawValue
-//                        clippingMetricID = ClippingMetricChoice.anyChannel.rawValue
                     }
                     .buttonStyle(.bordered)
                 }
@@ -94,7 +58,7 @@ struct PreferencesView: View {
             Spacer(minLength: 0)
         }
         .padding(24)
-        .frame(width: 640, height: 480)
+        .frame(width: 640, height: 300)
         .closeOnEscape()   // ← Esc now closes the Preferences window
     }
 }

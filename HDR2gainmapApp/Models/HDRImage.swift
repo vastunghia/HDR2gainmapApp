@@ -67,19 +67,6 @@ class HDRImage: Identifiable {
             }
         }
         
-        //        // Transfer function (cerca nei PNG properties)
-        //        var transferFunction = "Unknown"
-        //        if let pngDict = properties[kCGImagePropertyPNGDictionary as String] as? [String: Any] {
-        //            // Cerca gamma o altri indicatori
-        //            if let gamma = pngDict[kCGImagePropertyPNGGamma as String] as? Double {
-        //                if gamma < 0.5 {
-        //                    transferFunction = "PQ (HDR)"
-        //                } else {
-        //                    transferFunction = "Gamma \(String(format: "%.2f", gamma))"
-        //                }
-        //            }
-        //        }
-        
         // Prova a determinare transfer function dal color space
         //        if transferFunction == "Unknown" {
         var transferFunction = "Unknown"
@@ -115,8 +102,6 @@ class HDRImage: Identifiable {
     }
     
     private func loadThumbnailAsync() async {
-//        let startTime = Date()
-//        print("🔄 START thumbnail generation for: \(fileName)")
         
         // Usa QuickLook Thumbnailing per thumbnails veloci e ottimizzate
         let size = CGSize(width: 240, height: 160) // 2x della dimensione display per Retina
@@ -136,13 +121,7 @@ class HDRImage: Identifiable {
                 self.thumbnailImage = thumbnail.nsImage
             }
             
-//            let elapsed = Date().timeIntervalSince(startTime)
-//            print("✅ DONE thumbnail generation for: \(fileName) (took \(String(format: "%.2f", elapsed))s)")
-            
         } catch {
-            // Fallback: usa icona generica se QuickLook fallisce
-//            print("❌ QuickLook thumbnail failed for \(self.fileName): \(error)")
-            
             // Fallback più leggero: carica solo i metadata senza decodificare
             await self.loadFallbackThumbnail()
         }
