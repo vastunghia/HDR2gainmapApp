@@ -15,8 +15,15 @@ class MainViewModel {
     
     // Immagine correntemente selezionata
     var selectedImage: HDRImage? {
-        didSet { refreshMeasuredHeadroom() }
+        didSet {
+            refreshMeasuredHeadroom()
+            refreshInputHistogramAndBoundary()
+        }
     }
+    
+    // Nuove proprietà per gli istogrammi
+    var inputHistogram: RGBYHistogramData = .placeholderInput
+    var outputHistogram: RGBYHistogramData = .placeholderOutput
     
     // Preview generata per l'immagine selezionata
     var currentPreview: NSImage?
@@ -151,15 +158,58 @@ class MainViewModel {
         Task { @MainActor in
             guard let url = self.selectedImage?.url else { return }
             do {
+                // 1) Headroom “reale” dal file HDR
                 let raw = try processor.computeMeasuredHeadroomRaw(url: url)
                 self.measuredHeadroomRaw = raw
                 self.measuredHeadroom = max(1.0, raw)
+
+                // 2) Istogramma di input basato sul file HDR
+                var hist = try processor.computeInputHistogram(url: url, binCount: 512)
+
+                // Posizione linea verticale “SDR = headroom 0”
+                // Assunzione: measuredHeadroomRaw ≈ maxLuminance / SDRWhite
+                // → coordinate normalizzate: SDRWhite è a 1 / headroomRaw
+                let hr = max(raw, 1.0)
+                hist.sdrBoundaryX = 1.0 / CGFloat(hr)
+
+                self.inputHistogram = hist
+
             } catch {
                 self.measuredHeadroomRaw = 1.0
                 self.measuredHeadroom   = 1.0
+                self.inputHistogram = .placeholderInput
             }
         }
     }
+    
+    // Assicurati che sia sul MainActor se aggiorna @Published
+    @MainActor
+    private func refreshInputHistogramAndBoundary() {
+        // 1) Se non c’è immagine selezionata → placeholder
+        guard let url = selectedImage?.url else {
+            inputHistogram = .placeholderInput
+            return
+        }
+
+        do {
+            // 2) Calcolo istogramma input HDR
+            var hist = try HDRProcessor.shared.computeInputHistogram(url: url, binCount: 512)
+
+            // 3) Boundary SDR: x = 1 / peakY (asse X normalizzato al picco HDR)
+            // Se hai mantenuto un valore "raw" (senza floor), usalo; altrimenti measuredHeadroom.
+            let peak = (measuredHeadroomRaw > 0 ? measuredHeadroomRaw : measuredHeadroom)
+            let boundary = max(0, min(1, 1.0 / CGFloat(max(peak, 1e-6))))
+            hist.sdrBoundaryX = boundary
+
+            // 4) Pubblica
+            inputHistogram = hist
+        } catch {
+            // 5) In caso di errore → placeholder (niente nil)
+            print("⚠️ Histogram failed: \(error)")
+            inputHistogram = .placeholderInput
+        }
+    }
+
     
     // MARK: - Preview Generation
     

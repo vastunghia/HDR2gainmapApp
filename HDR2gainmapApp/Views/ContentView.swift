@@ -72,31 +72,35 @@ struct FolderSelectionView: View {
 // MARK: - Main Interface View
 
 struct MainInterfaceView: View {
-    @Bindable var viewModel: MainViewModel   // ← era `let`, ora osserva i cambi
+    @Bindable var viewModel: MainViewModel   // ← ok così
 
     var body: some View {
         HStack(spacing: 0) {
             // Parte sinistra: Preview + Thumbnail bar
             VStack(spacing: 0) {
-                // Preview pane (centro)
                 PreviewPane(viewModel: viewModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 Divider()
 
-                // Thumbnail bar (basso)
                 ThumbnailBar(viewModel: viewModel)
                     .frame(height: 140)
             }
 
             Divider()
 
-            // Control panel (destra)
-            ControlPanel(viewModel: viewModel)
-                .frame(width: 300)
+            // Pannello destro: istogrammi + control panel
+            VStack(spacing: 0) {
+                HistogramPanel(viewModel: viewModel)
+                    .frame(height: 140)
+
+                Divider()
+
+                ControlPanel(viewModel: viewModel)
+            }
+            .frame(width: 300)
         }
         .overlay {
-            // Export progress overlay (sopra tutto)
             if viewModel.isExporting {
                 ExportProgressView(
                     progress: viewModel.exportProgress,

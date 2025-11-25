@@ -253,6 +253,80 @@ class HDRProcessor {
         }
     }
     
+    /// Istogramma RGB+Y normalizzato dell'immagine HDR di input.
+    /// Usa CIAreaHistogram su tutta l'immagine, in spazio linear P3.
+    func computeInputHistogram(url: URL, binCount: Int = 512) throws -> RGBYHistogramData {
+        // Carica l'immagine HDR (linear P3, float) tramite la cache esistente
+        let hdr = try loadHDR(url: url)
+
+        // Istogramma per canale con Core Image
+        let filter = CIFilter.areaHistogram()
+        filter.inputImage = hdr
+        filter.extent = hdr.extent
+        filter.count = binCount
+        filter.scale = 1.0
+
+        guard let histImage = filter.outputImage else {
+            throw ProcessingError.histogramFailed
+        }
+
+        // Render dell'immagine 1×binCount in buffer RGBAf
+        var rawBins = [Float](repeating: 0, count: binCount * 4) // RGBA
+        let rowBytes = binCount * 4 * MemoryLayout<Float>.size
+
+        ctx_linear_p3.render(
+            histImage,
+            toBitmap: &rawBins,
+            rowBytes: rowBytes,
+            bounds: CGRect(x: 0, y: 0, width: binCount, height: 1),
+            format: .RGBAf,
+            colorSpace: nil
+        )
+
+        // Separiamo canali R/G/B e calcoliamo Y
+        var r = [CGFloat](repeating: 0, count: binCount)
+        var g = [CGFloat](repeating: 0, count: binCount)
+        var b = [CGFloat](repeating: 0, count: binCount)
+        var y = [CGFloat](repeating: 0, count: binCount)
+
+        for i in 0..<binCount {
+            let base = i * 4
+            let rC = CGFloat(rawBins[base + 0])
+            let gC = CGFloat(rawBins[base + 1])
+            let bC = CGFloat(rawBins[base + 2])
+
+            r[i] = rC
+            g[i] = gC
+            b[i] = bC
+
+            // Luma approssimata (coeff. stile Rec.2020 / P3)
+            y[i] = 0.2627 * rC + 0.6780 * gC + 0.0593 * bC
+        }
+
+        // Normalizza OGNI canale separatamente in [0, 1]
+        func normalize(_ arr: [CGFloat]) -> [CGFloat] {
+            guard let m = arr.max(), m > 0 else { return arr }
+            return arr.map { $0 / m }
+        }
+
+        r = normalize(r)
+        g = normalize(g)
+        b = normalize(b)
+        y = normalize(y)
+
+        // Asse X normalizzato (0..1), bin equispaziati
+        let xs = (0..<binCount).map { CGFloat($0) / CGFloat(binCount - 1) }
+
+        return RGBYHistogramData(
+            x: xs,
+            r: r,
+            g: g,
+            b: b,
+            y: y,
+            sdrBoundaryX: nil   // la impostiamo dal ViewModel
+        )
+    }
+    
     // MARK: - Headroom
 
     /// Peak = massimo assoluto della luminanza lineare (stessa usata per la clip-mask).
@@ -606,6 +680,7 @@ enum ProcessingError: LocalizedError {
     case makerAppleMetadataFailed
     case clipMaskFailed
     case imageConversionFailed
+    case histogramFailed
     
     var errorDescription: String? {
         switch self {
@@ -618,6 +693,7 @@ enum ProcessingError: LocalizedError {
         case .makerAppleMetadataFailed: return "Maker Apple metadata generation failed"
         case .clipMaskFailed: return "Clip mask generation failed"
         case .imageConversionFailed: return "Image conversion failed"
+        case .histogramFailed: return "Histogram calculation failed"
         }
     }
 }
