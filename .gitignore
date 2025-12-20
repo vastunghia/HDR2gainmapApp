@@ -62,3 +62,10 @@ fastlane/screenshots/**/*.png
 fastlane/test_output
 
 .DS_Store
+HDR2gainmapApp_tentative_cGPT-backup/
+profiling.trace/
+periphery.yml
+hdr2gainmap_knowledge_transfer.md
+HDR2gainmapApp/Bin
+icon_design/
+refactoring_progress.txt

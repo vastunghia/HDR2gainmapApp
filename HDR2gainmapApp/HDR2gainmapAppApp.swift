@@ -4,9 +4,9 @@ import SwiftUI
 struct HDR2gainmapApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()   // la tua view principale
+            ContentView()
         }
-
+        
         Settings {
             PreferencesView()
         }

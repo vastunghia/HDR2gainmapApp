@@ -3,29 +3,31 @@ import SwiftUI
 import UniformTypeIdentifiers
 import QuickLookThumbnailing
 
-/// Rappresenta un'immagine HDR con i suoi settings e stato di processing
+/// Represents an HDR image and its per-image processing settings and state.
 @Observable
 class HDRImage: Identifiable {
     let id = UUID()
     let url: URL
     let fileName: String
     
-    // Settings per il processing (memorizzati per immagine)
+    // Per-image processing settings (stored with the image instance).
     var settings: ProcessingSettings
     
-    // Stato del processing
+    // Processing state.
     var thumbnailImage: NSImage?
     var previewImage: NSImage?
     var isProcessing = false
     var lastError: String?
     
+    // Global metadata cache (key: file URL, value: extracted metadata).
+    private static var metadataCache = [URL: ImageMetadata]()
+    private var isLoadingMetadata = false
+    
     init(url: URL, loadThumbnailImmediately: Bool = true) {
         self.url = url
         self.fileName = url.deletingPathExtension().lastPathComponent
-        self.settings = ProcessingSettings() // Settings di default
+        self.settings = ProcessingSettings()
         
-        // Genera thumbnail in background solo se richiesto
-        // (permette al ViewModel di controllare l'ordine)
         if loadThumbnailImmediately {
             Task {
                 await self.loadThumbnailAsync()
@@ -33,47 +35,81 @@ class HDRImage: Identifiable {
         }
     }
     
-    // Metodo pubblico per trigger manuale (chiamato dal ViewModel)
     func startThumbnailGeneration() async {
         await loadThumbnailAsync()
     }
     
-    // Carica metadata del file immagine
+    /// Loads image metadata with a global cache (avoids re-reading from disk after the first extraction).
+    /// Prefers raw pixel bytes already cached by HDRProcessor.loadHDR(), when available.
+    @MainActor
     func loadMetadata() async -> ImageMetadata? {
-        guard let cgImageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            return nil
+        // print("📋 [HDRImage.loadMetadata] Called for: \(fileName)")
+        
+        // 1) Global cache hit?
+        if let cached = Self.metadataCache[url] {
+            // print("   ⚡ Global cache HIT - returning cached metadata")
+            return cached
         }
         
-        // Ottieni properties dell'immagine
-        guard let properties = CGImageSourceCopyPropertiesAtIndex(cgImageSource, 0, nil) as? [String: Any] else {
-            return nil
+        // 2) Already loading? (prevents concurrent extraction for this instance).
+        guard !isLoadingMetadata else {
+            // print("   ⚠️ Already loading, waiting...")
+            try? await Task.sleep(for: .milliseconds(100))
+            return Self.metadataCache[url]
         }
         
-        // Dimensioni
-        let width = properties[kCGImagePropertyPixelWidth as String] as? Int ?? 0
-        let height = properties[kCGImagePropertyPixelHeight as String] as? Int ?? 0
+        isLoadingMetadata = true
+        // print("   ❌ Cache MISS - extracting metadata...")
         
-        // Bit depth
-        let bitDepth = properties[kCGImagePropertyDepth as String] as? Int ?? 8
+        // 3) First, try to reuse raw pixel bytes already cached by HDRProcessor...
+        //    (e.g., if the image was already loaded for preview/histograms).
+        let metadata: ImageMetadata?
         
-        // Color space
+        if let cachedRawData = HDRProcessor.shared.getCachedRawPixelData(url: url) {
+            // print("   ⚡ METADATA: Using cached raw data from HDRProcessor (NO DISK I/O)")
+            metadata = extractMetadataFromCachedData(cachedRawData)
+        } else {
+            // print("   ⚠️ METADATA: Raw data not cached yet, reading header from disk")
+            metadata = await extractMetadataFromDisk()
+        }
+        
+        // 4) Store in the global metadata cache.
+        if let metadata = metadata {
+            Self.metadataCache[url] = metadata
+            // print("   ✅ Metadata cached globally for: \(fileName)")
+        } else {
+            // print("   ❌ Failed to extract metadata")
+        }
+        
+        isLoadingMetadata = false
+        return metadata
+    }
+    
+    /// Extracts metadata from already-cached RawPixelData (zero disk I/O).
+    private func extractMetadataFromCachedData(_ rawData: RawPixelData) -> ImageMetadata? {
+        // print("   → Extracting metadata from cached raw data...")
+        
+        let width = rawData.width
+        let height = rawData.height
+        let bitDepth = rawData.bitsPerComponent
+        
+        // Use CGImage properties from the cached CGImage.
+        let cgImage = rawData.cgImage
+        
         var colorSpaceName = "Unknown"
-        if let colorModel = properties[kCGImagePropertyColorModel as String] as? String {
-            // Prova a ottenere il nome specifico
-            if let profileName = properties[kCGImagePropertyProfileName as String] as? String {
-                colorSpaceName = profileName
-            } else {
-                colorSpaceName = colorModel
+        if let colorSpace = cgImage.colorSpace {
+            if let name = colorSpace.name as String? {
+                colorSpaceName = name
             }
         }
         
-        // Prova a determinare transfer function dal color space
-        //        if transferFunction == "Unknown" {
+        // Transfer function (detect PQ)
         var transferFunction = "Unknown"
-        if colorSpaceName.contains("PQ"){
+        if colorSpaceName.contains("PQ") || colorSpaceName.contains("ST2084") || colorSpaceName.contains("2084") {
             transferFunction = "PQ (HDR)"
-            }
-        //        }
+        } else if colorSpaceName.contains("sRGB") || colorSpaceName.contains("RGB") {
+            transferFunction = "sRGB"
+        }
         
         // File size
         var fileSize: Int64 = 0
@@ -82,14 +118,23 @@ class HDRImage: Identifiable {
             fileSize = size
         }
         
-        // Semplifica il nome del color space
-        if colorSpaceName.contains("Display P3") || colorSpaceName.contains("P3") {
+        // Simplify the color space name for display purposes.
+        if colorSpaceName.contains("Display P3") || colorSpaceName.contains("displayP3") {
+            colorSpaceName = "Display P3"
+        } else if colorSpaceName.contains("P3") {
             colorSpaceName = "Display P3"
         } else if colorSpaceName.contains("sRGB") {
             colorSpaceName = "sRGB"
-        } else if colorSpaceName.contains("RGB") {
+        } else if colorSpaceName.contains("RGB") && !colorSpaceName.contains("Unknown") {
             colorSpaceName = "RGB"
         }
+        
+        // print("   ✅ Metadata extracted from cache:")
+        // print("      - Color Space: \(colorSpaceName)")
+        // print("      - Transfer: \(transferFunction)")
+        // print("      - Resolution: \(width)×\(height)")
+        // print("      - Bit Depth: \(bitDepth)")
+        // print("      - File Size: \(fileSize) bytes")
         
         return ImageMetadata(
             colorSpace: colorSpaceName,
@@ -101,10 +146,80 @@ class HDRImage: Identifiable {
         )
     }
     
-    private func loadThumbnailAsync() async {
+    /// Extracts metadata from disk (fallback — only if HDRProcessor has no cached raw data).
+    private func extractMetadataFromDisk() async -> ImageMetadata? {
+        // print("   📀 Reading from DISK (CGImageSource)...")
         
-        // Usa QuickLook Thumbnailing per thumbnails veloci e ottimizzate
-        let size = CGSize(width: 240, height: 160) // 2x della dimensione display per Retina
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            // print("   ❌ Cannot create CGImageSource")
+            return nil
+        }
+        
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any] else {
+            // print("   ❌ Cannot read properties")
+            return nil
+        }
+        
+        // print("   → Extracting metadata from properties...")
+        
+        let width = properties[kCGImagePropertyPixelWidth as String] as? Int ?? 0
+        let height = properties[kCGImagePropertyPixelHeight as String] as? Int ?? 0
+        let bitDepth = properties[kCGImagePropertyDepth as String] as? Int ?? 8
+        
+        var colorSpaceName = "Unknown"
+        if let profileName = properties[kCGImagePropertyProfileName as String] as? String {
+            colorSpaceName = profileName
+        } else if let colorModel = properties[kCGImagePropertyColorModel as String] as? String {
+            colorSpaceName = colorModel
+        }
+        
+        var transferFunction = "Unknown"
+        if colorSpaceName.contains("PQ") || colorSpaceName.contains("ST2084") || colorSpaceName.contains("2084") {
+            transferFunction = "PQ (HDR)"
+        } else if let colorModel = properties[kCGImagePropertyColorModel as String] as? String,
+                  (colorModel.contains("PQ") || colorModel.contains("ST2084")) {
+            transferFunction = "PQ (HDR)"
+        } else if colorSpaceName.contains("sRGB") || colorSpaceName.contains("RGB") {
+            transferFunction = "sRGB"
+        }
+        
+        var fileSize: Int64 = 0
+        if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attrs[.size] as? Int64 {
+            fileSize = size
+        }
+        
+        if colorSpaceName.contains("Display P3") || colorSpaceName.contains("displayP3") {
+            colorSpaceName = "Display P3"
+        } else if colorSpaceName.contains("P3") {
+            colorSpaceName = "Display P3"
+        } else if colorSpaceName.contains("sRGB") {
+            colorSpaceName = "sRGB"
+        } else if colorSpaceName.contains("RGB") && !colorSpaceName.contains("Unknown") {
+            colorSpaceName = "RGB"
+        }
+        
+        // print("   ✅ Metadata extracted from disk:")
+        // print("      - Color Space: \(colorSpaceName)")
+        // print("      - Transfer: \(transferFunction)")
+        // print("      - Resolution: \(width)×\(height)")
+        // print("      - Bit Depth: \(bitDepth)")
+        // print("      - File Size: \(fileSize) bytes")
+        
+        return ImageMetadata(
+            colorSpace: colorSpaceName,
+            transferFunction: transferFunction,
+            width: width,
+            height: height,
+            bitDepth: bitDepth,
+            fileSize: fileSize
+        )
+    }
+    
+    // MARK: - Thumbnail Loading
+    
+    private func loadThumbnailAsync() async {
+        let size = CGSize(width: 240, height: 160)
         let scale = NSScreen.main?.backingScaleFactor ?? 2.0
         
         let request = QLThumbnailGenerator.Request(
@@ -122,22 +237,19 @@ class HDRImage: Identifiable {
             }
             
         } catch {
-            // Fallback più leggero: carica solo i metadata senza decodificare
             await self.loadFallbackThumbnail()
         }
     }
     
-    // Fallback: genera thumbnail downsampled (più efficiente del vecchio metodo)
     private func loadFallbackThumbnail() async {
         guard let cgImageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             return
         }
         
-        // Opzioni per downsampling: carica solo i dati necessari
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 240, // Larghezza max
+            kCGImageSourceThumbnailMaxPixelSize: 240,
         ]
         
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(cgImageSource, 0, options as CFDictionary) else {
@@ -148,4 +260,5 @@ class HDRImage: Identifiable {
             self.thumbnailImage = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
         }
     }
+    
 }

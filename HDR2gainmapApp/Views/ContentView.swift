@@ -1,18 +1,20 @@
 import SwiftUI
 
+/// Root view that switches between the initial folder picker and the main working UI,
+/// depending on whether any images have been loaded.
 struct ContentView: View {
     @State private var viewModel = MainViewModel()
-
+    
     var body: some View {
-        // Rebinding Observation → abilita $viewModel.* in questa view
+        // Bind Observation to enable `$viewModel.*` bindings in this view.
         @Bindable var viewModel = viewModel
-
+        
         Group {
             if viewModel.images.isEmpty {
-                // Schermata iniziale: folder selection
+                // Initial screen: folder selection.
                 FolderSelectionView(viewModel: viewModel)
             } else {
-                // Main interface: 3-panel layout
+                // Main UI: three-panel layout.
                 MainInterfaceView(viewModel: viewModel)
             }
         }
@@ -27,7 +29,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            // Se avvii con un’immagine già selezionata, misura subito l’headroom
+            // If the app launches with a preselected image, measure headroom immediately.
             if viewModel.selectedImage != nil {
                 viewModel.refreshMeasuredHeadroom()
             }
@@ -37,24 +39,25 @@ struct ContentView: View {
 
 // MARK: - Folder Selection View
 
+/// Landing screen shown before any images are loaded.
 struct FolderSelectionView: View {
-    @Bindable var viewModel: MainViewModel   // ← era `let`, ora osserva i cambi
-
+    @Bindable var viewModel: MainViewModel
+    
     var body: some View {
         VStack(spacing: 30) {
             Image(systemName: "photo.stack")
                 .font(.system(size: 80))
                 .foregroundStyle(.secondary)
-
+            
             Text("HDR to Gain Map Converter")
                 .font(.largeTitle)
                 .fontWeight(.bold)
-
+            
             Text("Select a folder containing HDR PNG images to get started")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-
+            
             Button(action: {
                 viewModel.selectInputFolder()
             }) {
@@ -71,32 +74,39 @@ struct FolderSelectionView: View {
 
 // MARK: - Main Interface View
 
+/// Main working area with a three-panel layout:
+/// - Left: preview + thumbnail bar
+/// - Right: histograms + controls
 struct MainInterfaceView: View {
-    @Bindable var viewModel: MainViewModel   // ← era `let`, ora osserva i cambi
-
+    @Bindable var viewModel: MainViewModel
+    
     var body: some View {
         HStack(spacing: 0) {
-            // Parte sinistra: Preview + Thumbnail bar
+            // Left: preview + thumbnail bar.
             VStack(spacing: 0) {
-                // Preview pane (centro)
+                // Preview pane (center).
                 PreviewPane(viewModel: viewModel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-
+                
                 Divider()
-
-                // Thumbnail bar (basso)
+                
+                // Thumbnail bar (bottom).
                 ThumbnailBar(viewModel: viewModel)
                     .frame(height: 140)
             }
-
+            
             Divider()
-
-            // Control panel (destra)
-            ControlPanel(viewModel: viewModel)
-                .frame(width: 300)
+            
+            // Right: histograms + controls.
+            VStack(spacing: 0) {
+                HistogramView(viewModel: viewModel)
+                Divider()
+                ControlPanel(viewModel: viewModel)
+            }
+            .frame(width: 300)
         }
         .overlay {
-            // Export progress overlay (sopra tutto)
+            // Export progress overlay (on top of everything).
             if viewModel.isExporting {
                 ExportProgressView(
                     progress: viewModel.exportProgress,

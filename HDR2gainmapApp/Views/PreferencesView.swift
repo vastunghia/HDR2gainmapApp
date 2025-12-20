@@ -11,7 +11,7 @@ struct PreferencesView: View {
             set: { exportMethodSelectionID = $0.rawValue }
         )
     }
-   
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
@@ -59,6 +59,6 @@ struct PreferencesView: View {
         }
         .padding(24)
         .frame(width: 640, height: 300)
-        .closeOnEscape()   // ← Esc now closes the Preferences window
+        .closeOnEscape()
     }
 }

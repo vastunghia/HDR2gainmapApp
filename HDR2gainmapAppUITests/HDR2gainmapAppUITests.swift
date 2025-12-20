@@ -1,10 +1,3 @@
-//
-//  HDR2gainmapAppUITests.swift
-//  HDR2gainmapAppUITests
-//
-//  Created by Sergio De Zordo on 21/10/25.
-//
-
 import XCTest
 
 final class HDR2gainmapAppUITests: XCTestCase {

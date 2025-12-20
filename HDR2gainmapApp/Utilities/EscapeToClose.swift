@@ -3,7 +3,7 @@ import AppKit
 
 struct EscapeToClose: ViewModifier {
     @State private var monitor: Any?
-
+    
     func body(content: Content) -> some View {
         content
             .onAppear {

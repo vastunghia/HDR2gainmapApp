@@ -1,5 +1,6 @@
 import SwiftUI
 
+/// Shows the current image preview along with loading/error states and a metadata bar.
 struct PreviewPane: View {
     let viewModel: MainViewModel
     
@@ -8,15 +9,15 @@ struct PreviewPane: View {
             // Preview image area
             ZStack {
                 if let preview = viewModel.currentPreview {
-                    // Preview disponibile
+                    // Preview is available
                     Image(nsImage: preview)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     
-                    // Loading overlay: solo spinner, nessun velo
-                    if viewModel.isLoadingPreview {
-                        // overlay trasparente che blocca l’input
+                    // Spinner while recomputing the preview due to settings changes (not while loading a new image).
+                    if viewModel.isLoadingPreview && !viewModel.isLoadingNewImage {
+                        // Transparent overlay that blocks user interaction.
                         Rectangle()
                             .fill(Color.clear)
                             .contentShape(Rectangle())
@@ -29,17 +30,43 @@ struct PreviewPane: View {
                                     .transition(.opacity)
                             )
                     }
-                } else if viewModel.selectedImage != nil {
-                    // Nessuna preview ma immagine selezionata (stato iniziale)
-                    if viewModel.isLoadingPreview {
-                        // Solo spinner mentre genera la preview
-                        ProgressView()
-                            .controlSize(.large)
-                            .scaleEffect(1.2)
-                            .tint(.secondary)
+                    
+                    // Dark overlay + spinner while loading a new image.
+                    if viewModel.isLoadingNewImage {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.5))  // Semi-transparent scrim.
+                            .contentShape(Rectangle())
+                            .allowsHitTesting(true)
+                            .overlay(
+                                VStack(spacing: 12) {
+                                    ProgressView()
+                                        .controlSize(.large)
+                                        .scaleEffect(1.5)
+                                        .tint(.white)
+                                    Text("Loading image...")
+                                        .font(.caption)
+                                        .foregroundStyle(.white)
+                                }
+                            )
                             .transition(.opacity)
+                    }
+                    
+                } else if viewModel.selectedImage != nil {
+                    // No preview yet, but an image is selected (initial state).
+                    if viewModel.isLoadingPreview || viewModel.isLoadingNewImage {
+                        // Spinner while the preview is being generated.
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .controlSize(.large)
+                                .scaleEffect(1.2)
+                                .tint(.secondary)
+                            Text("Loading image...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .transition(.opacity)
                     } else if let error = viewModel.previewError {
-                        // Immagine non è HDR valida
+                        // The selected image is not a valid HDR PNG.
                         VStack(spacing: 20) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.system(size: 60))
@@ -68,7 +95,7 @@ struct PreviewPane: View {
                         .background(Color(nsColor: .textBackgroundColor))
                     }
                 } else {
-                    // Nessuna immagine selezionata
+                    // No image selected.
                     VStack(spacing: 16) {
                         Image(systemName: "photo.stack")
                             .font(.system(size: 48))
@@ -85,15 +112,14 @@ struct PreviewPane: View {
             // Metadata bar
             if let selectedImage = viewModel.selectedImage {
                 MetadataBar(image: selectedImage, headroomRaw: viewModel.measuredHeadroomRaw)
-                    .id(selectedImage.id)  // Forza refresh quando cambia immagine
+                    .id(selectedImage.id)  // Forces a refresh when the selected image changes.
             }
         }
     }
 }
 
 
-// MARK: - Metadata Bar
-
+/// Displays lightweight metadata for the selected HDR image.
 struct MetadataBar: View {
     let image: HDRImage
     let headroomRaw: Float
@@ -107,7 +133,6 @@ struct MetadataBar: View {
             
             if let metadata = metadata {
                 HStack(spacing: 20) {
-                    // Color Space + Transfer Function
                     if metadata.colorSpace != "Unknown" {
                         MetadataItem(
                             icon: "paintpalette",
@@ -131,7 +156,6 @@ struct MetadataBar: View {
                         )
                     }
                     
-                    // Resolution
                     if metadata.width > 0 && metadata.height > 0 {
                         MetadataItem(
                             icon: "rectangle.grid.2x2",
@@ -140,7 +164,6 @@ struct MetadataBar: View {
                         )
                     }
                     
-                    // Bit Depth
                     if metadata.bitDepth > 0 {
                         MetadataItem(
                             icon: "square.stack.3d.up",
@@ -149,14 +172,12 @@ struct MetadataBar: View {
                         )
                     }
                     
-                    // Headroom (raw)
                     MetadataItem(
                         icon: "sun.max",
                         label: "Headroom",
-                        value: String(format: "%.3f", headroomRaw)
+                        value: String(format: "%.1f", headroomRaw) + " (" + String(format: "%.1f", log2(headroomRaw)) + " stops)"
                     )
                     
-                    // File Size
                     if metadata.fileSize > 0 {
                         MetadataItem(
                             icon: "doc",
@@ -168,7 +189,6 @@ struct MetadataBar: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
             } else if loadError {
-                // Errore nel caricamento metadata
                 HStack {
                     Image(systemName: "info.circle")
                         .foregroundStyle(.secondary)
@@ -178,7 +198,6 @@ struct MetadataBar: View {
                 }
                 .padding(.vertical, 12)
             } else {
-                // Loading metadata
                 HStack {
                     ProgressView()
                         .scaleEffect(0.6)
@@ -190,23 +209,38 @@ struct MetadataBar: View {
             }
         }
         .background(Color(nsColor: .controlBackgroundColor))
-        .task {
-            // Carica metadata in background
+        .task(id: image.id) {  // Keyed by image.id so this runs only when the image changes.
+            // This task re-runs only when image.id changes, not on every re-render.
+            // print("📋 [MetadataBar.task] Loading metadata for: \(image.fileName)")
+            
             metadata = await image.loadMetadata()
+            
             if metadata == nil {
                 loadError = true
+                // print("   ❌ [MetadataBar] Metadata load failed")
+            } else {
+                // print("   ✅ [MetadataBar] Metadata displayed")
             }
         }
     }
 }
 
+// MARK: - Implementation notes
+
+/*
+ Rationale:
+ - Metadata is loaded via a .task keyed by image.id so it runs only when the selected image changes,
+ not on every view re-render (e.g., when headroom updates).
+ - HDRImage.loadMetadata() is expected to be fast and cache-friendly (read header + cache results by URL).
+ */
 // MARK: - Metadata Item
 
+/// A compact labeled metadata field (icon + label + value).
 struct MetadataItem: View {
     let icon: String
     let label: String
     let value: String
-    var valueColor: Color = .primary  // ← Aggiungi parametro opzionale
+    var valueColor: Color = .primary  // Optional override for the value text color.
     
     var body: some View {
         HStack(spacing: 6) {
@@ -221,7 +255,7 @@ struct MetadataItem: View {
                     .foregroundStyle(.tertiary)
                 Text(value)
                     .font(.caption)
-                    .foregroundStyle(valueColor)  // ← Usa il colore custom
+                    .foregroundStyle(valueColor)  // Use the custom color if provided.
                     .fontWeight(.medium)
             }
         }
@@ -230,6 +264,7 @@ struct MetadataItem: View {
 
 // MARK: - Image Metadata Model
 
+/// Simple metadata extracted from the image header (no full decode).
 struct ImageMetadata {
     let colorSpace: String
     let transferFunction: String

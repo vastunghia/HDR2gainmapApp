@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4931E2022EBB3C8B00A525D8 /* QuickLookThumbnailing.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4931E2012EBB3C8B00A525D8 /* QuickLookThumbnailing.framework */; };
+		49CA990C2EEA2A2300296138 /* HistogramShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = 49CA990B2EEA2A2300296138 /* HistogramShaders.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,14 +33,10 @@
 		49A019CF2EA821E700A03362 /* HDR2gainmapApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HDR2gainmapApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		49A019DC2EA821E900A03362 /* HDR2gainmapAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49A019E62EA821E900A03362 /* HDR2gainmapAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		49CA990B2EEA2A2300296138 /* HistogramShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; name = HistogramShaders.metal; path = HDR2gainmapApp/Utilities/HistogramShaders.metal; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		49A019D12EA821E700A03362 /* HDR2gainmapApp */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = HDR2gainmapApp;
-			sourceTree = "<group>";
-		};
 		49A019DF2EA821E900A03362 /* HDR2gainmapAppTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = HDR2gainmapAppTests;
@@ -48,6 +45,11 @@
 		49A019E92EA821E900A03362 /* HDR2gainmapAppUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = HDR2gainmapAppUITests;
+			sourceTree = "<group>";
+		};
+		49A7F3642EE30245008B671F /* HDR2gainmapApp */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = HDR2gainmapApp;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -89,11 +91,12 @@
 		49A019C62EA821E700A03362 = {
 			isa = PBXGroup;
 			children = (
-				49A019D12EA821E700A03362 /* HDR2gainmapApp */,
+				49CA990B2EEA2A2300296138 /* HistogramShaders.metal */,
 				49A019DF2EA821E900A03362 /* HDR2gainmapAppTests */,
 				49A019E92EA821E900A03362 /* HDR2gainmapAppUITests */,
 				4931E2002EBB3C8B00A525D8 /* Frameworks */,
 				49A019D02EA821E700A03362 /* Products */,
+				49A7F3642EE30245008B671F /* HDR2gainmapApp */,
 			);
 			sourceTree = "<group>";
 		};
@@ -123,7 +126,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				49A019D12EA821E700A03362 /* HDR2gainmapApp */,
+				49A7F3642EE30245008B671F /* HDR2gainmapApp */,
 			);
 			name = HDR2gainmapApp;
 			packageProductDependencies = (
@@ -251,6 +254,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				49CA990C2EEA2A2300296138 /* HistogramShaders.metal in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

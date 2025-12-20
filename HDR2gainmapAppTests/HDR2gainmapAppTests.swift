@@ -1,10 +1,3 @@
-//
-//  HDR2gainmapAppTests.swift
-//  HDR2gainmapAppTests
-//
-//  Created by Sergio De Zordo on 21/10/25.
-//
-
 import XCTest
 @testable import HDR2gainmapApp
 

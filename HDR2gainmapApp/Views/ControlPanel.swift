@@ -18,7 +18,7 @@ struct ControlPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                // Header
+                // Settings header
                 Text("Settings")
                     .font(.title2)
                     .fontWeight(.bold)
@@ -28,7 +28,7 @@ struct ControlPanel: View {
                 Divider()
                 
                 if let selectedImage = viewModel.selectedImage {
-                    // 1. Clipped Overlay Section (PRIMA)
+                    // Clipped overlay
                     OverlaySection(
                         settings: Binding(
                             get: { selectedImage.settings },
@@ -39,12 +39,12 @@ struct ControlPanel: View {
                     
                     Divider()
                     
-                    // 2. Preview Updates Section (SECONDA - include auto-refresh + refresh button)
+                    // Preview refresh controls
                     PreviewUpdatesSection(viewModel: viewModel)
                     
                     Divider()
                     
-                    // 3. Tonemap Method (TERZA)
+                    // Tone-mapping method and parameters
                     TonemapMethodSection(
                         settings: Binding(
                             get: { selectedImage.settings },
@@ -60,7 +60,7 @@ struct ControlPanel: View {
                     
                     Divider()
                     
-                    // 4. Export Buttons (QUARTA)
+                    // Export actions
                     ExportSection(viewModel: viewModel)
                 } else {
                     // No image selected
@@ -85,7 +85,7 @@ struct ControlPanel: View {
     }
 }
 
-// MARK: - Preview Updates Section (Unified)
+// MARK: - Preview Updates Section
 
 struct PreviewUpdatesSection: View {
     let viewModel: MainViewModel
@@ -119,8 +119,8 @@ struct PreviewUpdatesSection: View {
             Text(viewModel.autoRefreshPreview
                  ? "Preview updates automatically when settings change"
                  : "Use Refresh button to update preview manually")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
         .padding(.horizontal)
     }
@@ -131,7 +131,6 @@ struct PreviewUpdatesSection: View {
 struct OverlaySection: View {
     @Binding var settings: ProcessingSettings
     let viewModel: MainViewModel
-//    let onSettingsChange: () -> Void
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -140,14 +139,40 @@ struct OverlaySection: View {
             
             Toggle("Show clipped pixels", isOn: $settings.showClippedOverlay)
                 .disabled(!viewModel.isCurrentImageValid)
-                .onChange(of: settings.showClippedOverlay) {     // ← zero-parameter closure
-                    // NIENTE debouncedRefresh qui: andiamo diretti
-                    viewModel.refreshPreview()
+                .onChange(of: settings.showClippedOverlay) {
+                    // Refreshes only the visual overlay (no histogram recomputation).
+                    viewModel.refreshPreviewOnly()
                 }
         }
         .padding(.horizontal)
     }
 }
+
+// MARK: - Preview Refresh Flow Notes
+
+/*
+ 1) Toggling the clipped overlay:
+ → refreshPreviewOnly()
+ → generatePreview(refreshHistograms: false)
+ → Updates the preview overlay only (histograms unchanged)
+ 
+ 2) Switching the tone-mapping method (e.g., peakMax → percentile):
+ → refreshPreview()
+ → generatePreview(refreshHistograms: true)
+ → HDR histogram: cache hit if the source image didn't change
+ → SDR histogram: recomputed because parameters changed
+ 
+ 3) Tweaking tone-mapping parameters (sliders):
+ → debouncedRefreshPreview()
+ → generatePreview(refreshHistograms: true) after the debounce delay
+ → HDR histogram: cache hit if the source image didn't change
+ → SDR histogram: recomputed because parameters changed
+ 
+ 4) Selecting a new image:
+ → selectImage()
+ → generatePreview(refreshHistograms: true)
+ → Both histograms are computed (then cached for subsequent previews)
+ */
 
 // MARK: - Tonemap Method Section
 
@@ -170,11 +195,11 @@ struct TonemapMethodSection: View {
             .disabled(!viewModel.isCurrentImageValid)
             .onChange(of: settings.method) {
                 if viewModel.autoRefreshPreview {
-                    viewModel.refreshPreview() // ← immediato, niente debounce
+                    viewModel.refreshPreview() // Immediate (no debounce)
                 }
             }
             
-            // Parameters based on selected method
+            // Parameters for the selected method
             switch settings.method {
             case .peakMax:
                 PeakMaxControls(
@@ -192,17 +217,16 @@ struct TonemapMethodSection: View {
                 DirectControls(
                     settings: $settings,
                     measuredHeadroom: viewModel.measuredHeadroom,
-                    onSettingsChange: onSettingsChange, // slider → debounce
+                    onSettingsChange: onSettingsChange, // Slider changes are debounced
                     onImmediateChange: {
                         if viewModel.autoRefreshPreview {
-                            viewModel.refreshPreview()   // reset → immediato
+                            viewModel.refreshPreview()   // Reset is immediate
                         }
                     },
                     isDisabled: !viewModel.isCurrentImageValid
                 )
             }
             
-            // Clipping stats line (aggiungo “(maxRGB)” per chiarezza)
             Group {
                 if viewModel.isCurrentImageValid, let stats = viewModel.clippingStats, stats.total > 0 {
                     let pct = (Double(stats.clipped) / Double(stats.total)) * 100.0
@@ -240,24 +264,43 @@ struct PeakMaxControls: View {
     let onSettingsChange: () -> Void
     let isDisabled: Bool
     
+    
+    private let tonemapRatioRange: ClosedRange<Float> = 0.0...1.0
+
+    /// The Peak Max slider is intentionally reversed: moving the thumb to the right decreases the
+    /// underlying `settings.tonemapRatio` that feeds the tone-mapping curve.
+    private var tonemapRatioSliderBinding: Binding<Float> {
+        Binding(
+            get: {
+                tonemapRatioRange.lowerBound + tonemapRatioRange.upperBound - settings.tonemapRatio
+            },
+            set: { newUIValue in
+                settings.tonemapRatio = tonemapRatioRange.lowerBound + tonemapRatioRange.upperBound - newUIValue
+                onSettingsChange()
+            }
+        )
+    }
+
+    /// Display the UI-facing value so the number grows as the thumb moves to the right.
+    private var displayedTonemapRatio: Float {
+        tonemapRatioRange.lowerBound + tonemapRatioRange.upperBound - settings.tonemapRatio
+    }
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Tonemap Ratio")
                     .font(.subheadline)
                 Spacer()
-                Text(String(format: "%.2f", settings.tonemapRatio))
+                Text(String(format: "%.2f", Double(displayedTonemapRatio)))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
             
-            Slider(value: $settings.tonemapRatio, in: 0.0...1.0, step: 0.01)
-                .disabled(isDisabled)  // ← AGGIUNGI
-                .onChange(of: settings.tonemapRatio) {
-                    onSettingsChange()
-                }
-            
+            Slider(value: tonemapRatioSliderBinding, in: tonemapRatioRange)
+                .disabled(isDisabled)
+                            
             Text("Controls the softening curve applied to peak brightness")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -275,14 +318,14 @@ struct PercentileControls: View {
     let onSettingsChange: () -> Void
     let isDisabled: Bool
     
-    // Parametri della curva
+    // Curve parameters
     private let beta: Double = 1.0/3.0
     private let k: Double = 3.0
     
     private let minP: Double = 0.95
     private let maxP: Double = 0.99999
     
-    // Tick marks: posizioni slider fisse con i rispettivi percentili calcolati
+    // Tick marks: fixed slider positions with their corresponding percentiles.
     private let tickMarks: [(sliderPos: Double, label: String)] = [
         (0.0, "95%"),
         (0.2, "99.6%"),
@@ -292,14 +335,14 @@ struct PercentileControls: View {
         (1.0, "99.999%")
     ]
     
-    // Conversione da percentile a slider position (funzione inversa)
+    // Percentile → slider position (inverse mapping)
     private var sliderPosition: Double {
         let percentileDouble = Double(settings.percentile)
         
-        // Usa tolleranza per gestire imprecisioni della conversione Float
+        // Use a tolerance to absorb Float conversion noise.
         let tolerance = 1e-6
         
-        // Gestisci esplicitamente gli estremi per precisione
+        // Handle the endpoints explicitly for better precision.
         if percentileDouble <= minP + tolerance {
             return 0.0
         }
@@ -316,16 +359,16 @@ struct PercentileControls: View {
         let subtracted = 1.0 - powered
         let result = pow(subtracted, 1.0 / beta)
         
-        // Clamp per evitare che errori di arrotondamento impediscano di raggiungere gli estremi
+        // Clamp to ensure rounding noise doesn't prevent reaching the endpoints.
         if !result.isFinite || result.isNaN {
             return 0.0
         }
         return min(max(result, 0.0), 1.0)
     }
     
-    // Conversione da slider position a percentile (funzione diretta)
+    // Slider position → percentile (forward mapping)
     private func setPercentileFromSlider(_ s: Double) {
-        // Gestisci esplicitamente gli estremi per evitare problemi di precisione Float
+        // Handle the endpoints explicitly to avoid Float precision issues.
         if s <= 0.0 {
             settings.percentile = Float(minP)
             return
@@ -345,7 +388,7 @@ struct PercentileControls: View {
         let normalized = 1.0 - powered
         let percentile = minP + range * normalized
         
-        // Clamp result per evitare valori fuori range
+        // Clamp to avoid out-of-range values.
         settings.percentile = Float(min(max(percentile, minP), maxP))
         
     }
@@ -374,35 +417,35 @@ struct PercentileControls: View {
                 in: 0.0...1.0
             )
             .disabled(isDisabled)
-
-            // Tick marks sotto lo slider
+            
+            // Tick marks below the slider
             ZStack(alignment: .topLeading) {
                 GeometryReader { geometry in
                     ForEach(Array(tickMarks.enumerated()), id: \.offset) { _, tick in
-                        // Lo slider ha un padding interno di circa 10pt per lato
-                        // Compensiamo per allineare i tick con la track effettiva dello slider
+                        // SwiftUI's Slider has an internal padding of ~10pt per side.
+                        // Compensate to align ticks with the effective track.
                         let sliderPadding: CGFloat = 10.0
                         let effectiveWidth = geometry.size.width - (sliderPadding * 2)
                         let xPosition = sliderPadding + (effectiveWidth * tick.sliderPos)
                         
                         VStack(spacing: 2) {
-                            // Linea tick mark
+                            // Tick mark line
                             Rectangle()
                                 .fill(Color.secondary.opacity(0.4))
                                 .frame(width: 1, height: 6)
                             
-                            // Label sotto la linea
+                            // Label below the line
                             Text(tick.label)
                                 .font(.system(size: 9))
                                 .foregroundStyle(.tertiary)
                                 .fixedSize()
                         }
-                        .frame(width: 0, height: 0, alignment: .top) // Punto di ancoraggio
-                        .offset(x: xPosition, y: 0) // Sposta dal punto di ancoraggio
+                        .frame(width: 0, height: 0, alignment: .top) // Anchor point
+                        .offset(x: xPosition, y: 0) // Offset from the anchor point
                     }
                 }
             }
-            .frame(height: 24) // Altezza sufficiente per linea + label
+            .frame(height: 24) // Height for tick line + label
             
             Text("Uses histogram-based peak detection for robust headroom calculation")
                 .font(.caption2)
@@ -427,7 +470,7 @@ struct DirectControls: View {
     }
     private func fmt(_ v: Float) -> String { String(format: "%.3f", v) }
     
-    // Binding che mappa gli opzionali su default sensati
+    // Bindings that map optionals to sensible defaults
     private var sourceBinding: Binding<Float> {
         Binding(
             get: { settings.directSourceHeadroom ?? max(1.0, measuredHeadroom) },
@@ -453,7 +496,7 @@ struct DirectControls: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            Slider(value: sourceBinding, in: 0...maxLimit)/*, step: 0.001)*/
+            Slider(value: sourceBinding, in: 0...maxLimit)
                 .disabled(isDisabled)
             
             // Slider: target headroom
@@ -466,13 +509,13 @@ struct DirectControls: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            Slider(value: targetBinding, in: 0...maxLimit)/*, step: 0.001)*/
+            Slider(value: targetBinding, in: 0...maxLimit)
                 .disabled(isDisabled)
             
             HStack(spacing: 12) {
                 Button("Reset defaults") {
                     settings.resetDirectDefaults(measuredHeadroom: max(1.0, measuredHeadroom))
-                    onImmediateChange() // ← immediato, niente debounce
+                    onImmediateChange() // Immediate (no debounce)
                 }
                 .disabled(isDisabled)
                 

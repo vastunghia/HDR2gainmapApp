@@ -1,47 +1,47 @@
 import Foundation
 import Observation
 
-/// Settings di processing per una singola immagine
+/// Processing settings for a single image.
 @Observable
-class ProcessingSettings {  // class (non struct) come da tua base
-
-    // MARK: - Tonemap method
+class ProcessingSettings {
+    
+    // MARK: - Tone mapping
     enum TonemapMethod: String, Codable, CaseIterable {
         case peakMax     = "Peak Max"
         case percentile  = "Percentile"
-        case direct      = "Direct"      // ← NEW
+        case direct      = "Direct"      // New: explicit headroom mapping
     }
-
-    /// Metodo di tonemap
+    
+    /// Tone mapping method.
     var method: TonemapMethod = .peakMax
-
-    // MARK: - Parametri per Peak Max
-    /// [0,1] — 0 => nessun clipping; 1 => headroom=1 (nessun tonemap verso SDR)
+    
+    // MARK: - Peak Max parameters
+    /// In [0, 1] — 0 = no clipping; 1 = headroom = 1 (no tone mapping toward SDR).
     var tonemapRatio: Float = 0.2
-
-    // MARK: - Parametri per Percentile
-    /// Percentile su [0,1] — es. 0.999 = 99.9°
+    
+    // MARK: - Percentile parameters
+    /// Percentile in [0, 1] — e.g. 0.999 = 99.9th.
     var percentile: Float = 0.999
-
-    // MARK: - Parametri per Direct (espliciti Apple)
-    /// Se nil, usa default dinamici (source = measuredHeadroom)
+    
+    // MARK: - Direct parameters (explicit Apple headrooms)
+    /// If nil, uses a dynamic default (source = measuredHeadroom).
     var directSourceHeadroom: Float? = nil
-    /// Se nil, usa default dinamici (target = 1.0)
+    /// If nil, uses a dynamic default (target = 1.0).
     var directTargetHeadroom: Float? = nil
-
-    /// Reimposta i default per Direct (comodo per un pulsante "Reset")
+    
+    /// Restores Direct defaults (handy for a "Reset" button).
     func resetDirectDefaults(measuredHeadroom: Float) {
         let real = max(1.0, measuredHeadroom)
         directSourceHeadroom = real
         directTargetHeadroom = 1.0
     }
-
-    // MARK: - Opzioni visualizzazione
+    
+    // MARK: - Visualization
     var showClippedOverlay: Bool = true
     var overlayColor: String = "magenta"
-
-    // MARK: - Opzioni export
+    
+    // MARK: - Export
     var heicQuality: Float = 0.97
-
+    
     init() {}
 }
