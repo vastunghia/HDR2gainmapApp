@@ -363,45 +363,22 @@ struct HistogramCanvasCompact: View {
         label: String
     ) {
         let xPos = nitsToX(nits) * size.width
-        let triangleSize: CGFloat = 6  // Triangle size.
+        let triangleSize: CGFloat = 8
         
-        // Vertical line.
-        var linePath = Path()
-        linePath.move(to: CGPoint(x: xPos, y: triangleSize))
-        linePath.addLine(to: CGPoint(x: xPos, y: size.height - triangleSize))
-        context.stroke(
-            linePath,
-            with: .color(color.opacity(0.85)),
-            style: StrokeStyle(lineWidth: 2.0)
-        )
-        
-        // Top arrowhead (points up).
+        // Upper triangle (arrow pointing south ▼)
         var topTriangle = Path()
-        topTriangle.move(to: CGPoint(x: xPos, y: 0))  // Punta
-        topTriangle.addLine(to: CGPoint(x: xPos - triangleSize, y: triangleSize))  // Base sinistra
-        topTriangle.addLine(to: CGPoint(x: xPos + triangleSize, y: triangleSize))  // Base destra
+        topTriangle.move(to: CGPoint(x: xPos, y: triangleSize))  // Head (bottom)
+        topTriangle.addLine(to: CGPoint(x: xPos - triangleSize, y: 0))  // Left base (top)
+        topTriangle.addLine(to: CGPoint(x: xPos + triangleSize, y: 0))  // Right base (top)
         topTriangle.closeSubpath()
         
-        context.fill(topTriangle, with: .color(color.opacity(0.85)))
+        context.fill(topTriangle, with: .color(color.opacity(0.9)))
         
-        // Bottom arrowhead (points down).
-        var bottomTriangle = Path()
-        bottomTriangle.move(to: CGPoint(x: xPos, y: size.height))  // Punta
-        bottomTriangle.addLine(to: CGPoint(x: xPos - triangleSize, y: size.height - triangleSize))  // Base sinistra
-        bottomTriangle.addLine(to: CGPoint(x: xPos + triangleSize, y: size.height - triangleSize))  // Base destra
-        bottomTriangle.closeSubpath()
-        
-        context.fill(bottomTriangle, with: .color(color.opacity(0.85)))
-        
-        // Optional label (e.g., IN/OUT) to disambiguate markers.
-        let labelText = Text(label)
-            .font(.system(size: 8, weight: .bold))
-            .foregroundColor(.white)
-        
-        context.draw(
-            labelText,
-            at: CGPoint(x: xPos, y: size.height / 2),
-            anchor: .center
+        // Optional: border for higher visibility
+        context.stroke(
+            topTriangle,
+            with: .color(color),
+            style: StrokeStyle(lineWidth: 1.0)
         )
     }
     
