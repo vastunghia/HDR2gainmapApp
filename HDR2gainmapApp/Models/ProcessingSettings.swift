@@ -5,43 +5,59 @@ import Observation
 @Observable
 class ProcessingSettings {
     
+    // MARK: - Default values
+    static let defaultTonemapRatio: Float = 0.2  // UI displays as 0.8 (reversed)
+    static let defaultPercentile: Float = 0.999  // 99.900%
+    static let defaultTargetHeadroom: Float = 1.0
+    
     // MARK: - Tone mapping
-    enum TonemapMethod: String, Codable, CaseIterable {
+    
+    /// Method for determining source headroom
+    enum SourceHeadroomMethod: String, Codable, CaseIterable {
         case peakMax     = "Peak Max"
         case percentile  = "Percentile"
         case direct      = "Direct"
     }
     
-    /// Tone mapping method.
-    var method: TonemapMethod = .peakMax
+    /// Source headroom method
+    var sourceHeadroomMethod: SourceHeadroomMethod = .peakMax
     
-    // MARK: - Peak Max parameters
-    /// In [0, 1] — 0 = no clipping; 1 = headroom = 1 (no tone mapping toward SDR).
-    var tonemapRatio: Float = 0.2
+    // MARK: - Source headroom parameters
     
-    // MARK: - Percentile parameters
-    /// Percentile in [0, 1] — e.g. 0.999 = 99.9th.
-    var percentile: Float = 0.999
+    /// Peak Max parameter: In [0, 1] — 0 = no clipping; 1 = headroom = 1 (no tone mapping toward SDR).
+    var tonemapRatio: Float = defaultTonemapRatio
     
-    // MARK: - Direct parameters (explicit Apple headrooms)
-    /// If nil, uses a dynamic default (source = measuredHeadroom).
+    /// Percentile parameter: Percentile in [0, 1] — e.g. 0.999 = 99.9th.
+    var percentile: Float = defaultPercentile
+    
+    /// Direct parameter: If nil, uses a dynamic default (source = measuredHeadroom).
     var directSourceHeadroom: Float? = nil
-    /// If nil, uses a dynamic default (target = 1.0).
-    var directTargetHeadroom: Float? = nil
     
-    /// Restores Direct defaults (handy for a "Reset" button).
-    func resetDirectDefaults(measuredHeadroom: Float) {
+    // MARK: - Target headroom parameters
+    
+    /// Whether to allow adjusting target headroom (advanced option)
+    var adjustTargetHeadroom: Bool = false
+    
+    /// Target headroom value: If nil, uses default of 1.0 (SDR).
+    var targetHeadroom: Float? = nil
+    
+    /// Restores defaults for all parameters
+    func resetDefaults(measuredHeadroom: Float) {
+        // Reset source headroom parameters for all methods
+        tonemapRatio = Self.defaultTonemapRatio
+        percentile = Self.defaultPercentile
+        
         let real = max(1.0, measuredHeadroom)
         directSourceHeadroom = real
-        directTargetHeadroom = 1.0
+        
+        // Reset target headroom
+        targetHeadroom = Self.defaultTargetHeadroom
+        adjustTargetHeadroom = false
     }
     
     // MARK: - Visualization
     var showClippedOverlay: Bool = true
     var overlayColor: String = "magenta"
-    
-    // MARK: - Export quality removed (now in UserDefaults/Preferences)
-    // var heicQuality: Float = 0.97  // REMOVED
     
     init() {}
 }

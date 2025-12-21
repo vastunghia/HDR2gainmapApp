@@ -446,17 +446,13 @@ struct HistogramCanvasCompact: View {
         
         let sourceHeadroom: Float
         
-        switch image.settings.method {
+        switch image.settings.sourceHeadroomMethod {  // era .method
         case .peakMax:
-            // Keep the UI indicator in sync with the value actually fed into `CIToneMapHeadroom`
-            // for the Peak Max method (see HDRProcessor.generatePreview()).
             let measured = viewModel.measuredHeadroom
             let r = image.settings.tonemapRatio
             sourceHeadroom = max(1.0, 1.0 + measured - powf(measured, r))
             
         case .percentile:
-            // Percentile: the source headroom is derived from image content.
-            // Use the cached lookup (if ready) so the indicator can update in real time while dragging the slider.
             sourceHeadroom = viewModel.cachedPercentileSourceHeadroom() ?? viewModel.measuredHeadroom
             
         case .direct:
@@ -470,18 +466,7 @@ struct HistogramCanvasCompact: View {
     private func getTargetHeadroomNits() -> Float? {
         guard let image = viewModel.selectedImage else { return nil }
         
-        let targetHeadroom: Float
-        
-        switch image.settings.method {
-        case .peakMax, .percentile:
-            // For these methods, the target is always reference white.
-            return Constants.referenceHDRwhiteNit
-            
-        case .direct:
-            targetHeadroom = image.settings.directTargetHeadroom ?? 1.0
-        }
-        
-        // `targetHeadroom` is relative; convert to absolute nits.
+        let targetHeadroom = image.settings.targetHeadroom ?? 1.0
         return targetHeadroom * Constants.referenceHDRwhiteNit
     }
     

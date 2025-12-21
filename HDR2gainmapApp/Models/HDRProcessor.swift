@@ -23,17 +23,20 @@ class HDRProcessor {
     private var percentileCDFInFlight: [NSURL: Task<PercentileCDFBox, Error>] = [:]
     
     private func previewSettingsFingerprint(_ s: ProcessingSettings) -> String {
-        switch s.method {
+        // Include both source and target headroom in the fingerprint
+        let th = s.targetHeadroom ?? 1.0
+        
+        switch s.sourceHeadroomMethod {
         case .peakMax:
-            return "m=peakMax;r=\(s.tonemapRatio)"
+            return "m=peakMax;r=\(s.tonemapRatio);th=\(th)"
         case .percentile:
-            return "m=percentile;p=\(s.percentile)"
+            return "m=percentile;p=\(s.percentile);th=\(th)"
         case .direct:
             let sh = s.directSourceHeadroom ?? -1
-            let th = s.directTargetHeadroom ?? -1
             return "m=direct;sh=\(sh);th=\(th)"
         }
     }
+    
     private func previewKey(url: URL, settings: ProcessingSettings) -> NSString {
         let k = url.absoluteString + "|" + previewSettingsFingerprint(settings)
         return NSString(string: k)
@@ -105,42 +108,29 @@ class HDRProcessor {
         // print("   🔍 [generatePreview] getHeadroomForImage returned: \(measuredHeadroom)")
         
         let sdrBase: CIImage
-        switch image.settings.method {
+        switch image.settings.sourceHeadroomMethod {
         case .peakMax:
             // PeakMax: use the derived formula.
             let derivedHeadroom = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, image.settings.tonemapRatio))
-            guard let s = tonemap_sdr(from: hdr, headroom_ratio: derivedHeadroom) else {
+            let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: derivedHeadroom, targetHeadroom: targetHeadroom) else {
                 throw ProcessingError.tonemapFailed
             }
             sdrBase = s
             
-            //        case .percentile:
-            //            // Percentile: derive headroom from the percentile.
-            //            guard let percentileHeadroom = calculatePercentileHeadroom(
-            //                url: image.url,
-            //                percentile: image.settings.percentile
-            //            ) else {
-            //                throw ProcessingError.headroomCalculationFailed
-            //            }
-            //            guard let s = tonemap_sdr(from: hdr, headroom_ratio: percentileHeadroom) else {
-            //                throw ProcessingError.tonemapFailed
-            //            }
-            //            sdrBase = s
-            
         case .percentile:
             // Percentile: derive the source headroom from image content at the selected percentile.
-            // The histogram UI uses the same cached lookup so the magenta indicator stays responsive while dragging.
             let percentileHeadroom = try await percentileHeadroom(url: image.url, percentile: image.settings.percentile)
-            guard let s = tonemap_sdr(from: hdr, headroom_ratio: percentileHeadroom) else {
+            let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: percentileHeadroom, targetHeadroom: targetHeadroom) else {
                 throw ProcessingError.tonemapFailed
             }
             sdrBase = s
             
         case .direct:
             // Direct: use explicit user-provided values.
-            // Defaults to measuredHeadroom when not provided.
             let sH = image.settings.directSourceHeadroom ?? measuredHeadroom
-            let tH = image.settings.directTargetHeadroom ?? 1.0
+            let tH = image.settings.targetHeadroom ?? 1.0
             
             // Clamp to a reasonable range (0.1× to 2× the measured value).
             let maxLimit = max(1.0, measuredHeadroom * 2.0)
@@ -173,7 +163,6 @@ class HDRProcessor {
         }
     }
     
-    /// Esporta singola immagine come HEIC con gain map
     /// Exports a single image as HEIC with gain map
     func exportImage(_ image: HDRImage, to outputURL: URL) async throws {
         
@@ -186,20 +175,23 @@ class HDRProcessor {
         var sdr: CIImage?
         let derivedHeadroom: Float  // For metadata.
         
-        switch image.settings.method {
+        // Get target headroom (common to all methods)
+        let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+        
+        switch image.settings.sourceHeadroomMethod {
         case .peakMax:
             let calculated = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, image.settings.tonemapRatio))
             derivedHeadroom = calculated
-            sdr = tonemap_sdr(from: hdr, headroom_ratio: calculated)
+            sdr = tonemap_sdr(from: hdr, sourceHeadroom: calculated, targetHeadroom: targetHeadroom)
             
         case .percentile:
             let percentileHeadroom = try await percentileHeadroom(url: image.url, percentile: image.settings.percentile)
             derivedHeadroom = percentileHeadroom
-            sdr = tonemap_sdr(from: hdr, headroom_ratio: percentileHeadroom)
+            sdr = tonemap_sdr(from: hdr, sourceHeadroom: percentileHeadroom, targetHeadroom: targetHeadroom)
             
         case .direct:
             let sH = image.settings.directSourceHeadroom ?? measuredHeadroom
-            let tH = image.settings.directTargetHeadroom ?? 1.0
+            let tH = targetHeadroom
             
             let maxLimit = max(1.0, measuredHeadroom * 2.0)
             let sH_clamped = min(max(sH, 0.1), maxLimit)

@@ -32,8 +32,8 @@ struct ControlPanel: View {
                 Divider()
                 
                 if let selectedImage = viewModel.selectedImage {
-                    // Tone-mapping method and parameters
-                    TonemapMethodSection(
+                    // Tone-mapping controls
+                    TonemapControlsSection(
                         settings: Binding(
                             get: { selectedImage.settings },
                             set: { selectedImage.settings = $0 }
@@ -87,56 +87,126 @@ struct ControlPanel: View {
     }
 }
 
-// MARK: - Tonemap Method Section
+// MARK: - Tonemap Controls Section
 
-struct TonemapMethodSection: View {
+struct TonemapControlsSection: View {
     @Binding var settings: ProcessingSettings
     let viewModel: MainViewModel
     let onSettingsChange: () -> Void
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Method picker (no label above)
-            Picker("Method", selection: $settings.method) {
-                ForEach(ProcessingSettings.TonemapMethod.allCases, id: \.self) { method in
-                    Text(method.rawValue).tag(method)
+        VStack(alignment: .leading, spacing: 20) {
+            // SOURCE HEADROOM SECTION
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Source Headroom")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                
+                // Method picker
+                Picker("Method", selection: $settings.sourceHeadroomMethod) {
+                    ForEach(ProcessingSettings.SourceHeadroomMethod.allCases, id: \.self) { method in
+                        Text(method.rawValue).tag(method)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(!viewModel.isCurrentImageValid)
+                .onChange(of: settings.sourceHeadroomMethod) {
+                    onSettingsChange()
+                }
+                
+                // Parameters based on selected method
+                switch settings.sourceHeadroomMethod {
+                case .peakMax:
+                    PeakMaxControls(
+                        settings: $settings,
+                        onSettingsChange: onSettingsChange,
+                        isDisabled: !viewModel.isCurrentImageValid
+                    )
+                case .percentile:
+                    PercentileControls(
+                        settings: $settings,
+                        onSettingsChange: onSettingsChange,
+                        isDisabled: !viewModel.isCurrentImageValid
+                    )
+                case .direct:
+                    DirectSourceHeadroomControls(
+                        settings: $settings,
+                        measuredHeadroom: viewModel.measuredHeadroom,
+                        onSettingsChange: onSettingsChange,
+                        isDisabled: !viewModel.isCurrentImageValid
+                    )
                 }
             }
-            .pickerStyle(.segmented)
-            .disabled(!viewModel.isCurrentImageValid)
-            .onChange(of: settings.method) {
-                // Method changes trigger immediate refresh (no debounce)
-                viewModel.debouncedRefreshPreview()
-            }
             
-            // Parameters for the selected method
-            switch settings.method {
-            case .peakMax:
-                PeakMaxControls(
-                    settings: $settings,
-                    onSettingsChange: onSettingsChange,
-                    isDisabled: !viewModel.isCurrentImageValid
-                )
-            case .percentile:
-                PercentileControls(
-                    settings: $settings,
-                    onSettingsChange: onSettingsChange,
-                    isDisabled: !viewModel.isCurrentImageValid
-                )
-            case .direct:
-                DirectControls(
+            Divider()
+            
+            // TARGET HEADROOM SECTION
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("Target Headroom")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    
+                    Spacer()
+                    
+                    Text("(Advanced)")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                
+                // Checkbox to enable target headroom adjustment
+                Toggle("Adjust also Target headroom", isOn: $settings.adjustTargetHeadroom)
+                    .disabled(!viewModel.isCurrentImageValid)
+                    .onChange(of: settings.adjustTargetHeadroom) {
+                        // If disabled, reset to default 1.0
+                        if !settings.adjustTargetHeadroom {
+                            settings.targetHeadroom = 1.0
+                        }
+                        onSettingsChange()
+                    }
+                
+                // Target headroom slider (enabled only when checkbox is checked)
+                TargetHeadroomControls(
                     settings: $settings,
                     measuredHeadroom: viewModel.measuredHeadroom,
-                    onSettingsChange: onSettingsChange, // Slider changes are debounced
-                    onImmediateChange: {
-                        // Reset button triggers immediate refresh
-                        viewModel.debouncedRefreshPreview()
-                    },
-                    isDisabled: !viewModel.isCurrentImageValid
+                    onSettingsChange: onSettingsChange,
+                    isDisabled: !viewModel.isCurrentImageValid || !settings.adjustTargetHeadroom
                 )
+            }
+            
+            Divider()
+            
+            // Reset button
+            HStack {
+                Button("Reset to defaults") {
+                    settings.resetDefaults(measuredHeadroom: max(1.0, viewModel.measuredHeadroom))
+                    onSettingsChange()
+                }
+                .disabled(!viewModel.isCurrentImageValid)
+                
+                Spacer()
+                
+                // Optional: Show current method's default value as hint
+                Text(defaultHintText())
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
         .padding(.horizontal)
+    }
+    
+    // Add this helper function inside TonemapControlsSection:
+    private func defaultHintText() -> String {
+        switch settings.sourceHeadroomMethod {
+        case .peakMax:
+            // tonemapRatio = 0.2 → displayed as 0.8 (reversed)
+            let displayedDefault = 1.0 - ProcessingSettings.defaultTonemapRatio
+            return "Default: \(String(format: "%.1f", displayedDefault))"
+        case .percentile:
+            return "Default: \(String(format: "%.3f%%", ProcessingSettings.defaultPercentile * 100))"
+        case .direct:
+            return "Default: measured headroom"
+        }
     }
 }
 
@@ -146,7 +216,6 @@ struct PeakMaxControls: View {
     @Binding var settings: ProcessingSettings
     let onSettingsChange: () -> Void
     let isDisabled: Bool
-    
     
     private let tonemapRatioRange: ClosedRange<Float> = 0.0...1.0
 
@@ -173,10 +242,10 @@ struct PeakMaxControls: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Tonemap Ratio")
-                    .font(.subheadline)
+                    .font(.caption)
                 Spacer()
                 Text(String(format: "%.2f", Double(displayedTonemapRatio)))
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -187,12 +256,10 @@ struct PeakMaxControls: View {
             Text("Controls the softening curve applied to peak brightness")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            
         }
         .padding(.vertical, 4)
     }
 }
-
 
 // MARK: - Percentile Controls
 
@@ -273,17 +340,16 @@ struct PercentileControls: View {
         
         // Clamp to avoid out-of-range values.
         settings.percentile = Float(min(max(percentile, minP), maxP))
-        
     }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("Percentile")
-                    .font(.subheadline)
+                    .font(.caption)
                 Spacer()
                 Text(String(format: "%.3f%%", settings.percentile * 100))
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
@@ -338,13 +404,12 @@ struct PercentileControls: View {
     }
 }
 
-// MARK: - Direct Controls
+// MARK: - Direct Source Headroom Controls
 
-struct DirectControls: View {
+struct DirectSourceHeadroomControls: View {
     @Binding var settings: ProcessingSettings
     let measuredHeadroom: Float
     let onSettingsChange: () -> Void
-    let onImmediateChange: () -> Void
     let isDisabled: Bool
     
     private var maxLimit: Float {
@@ -353,61 +418,77 @@ struct DirectControls: View {
     }
     private func fmt(_ v: Float) -> String { String(format: "%.3f", v) }
     
-    // Bindings that map optionals to sensible defaults
+    // Binding that maps optional to sensible default
     private var sourceBinding: Binding<Float> {
         Binding(
             get: { settings.directSourceHeadroom ?? max(1.0, measuredHeadroom) },
             set: { settings.directSourceHeadroom = $0; onSettingsChange() }
         )
     }
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Value")
+                    .font(.caption)
+                Spacer()
+                Text(fmt(sourceBinding.wrappedValue))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            
+            Slider(value: sourceBinding, in: 0.1...maxLimit)
+                .disabled(isDisabled)
+            
+            Text("Direct control of source headroom parameter")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Target Headroom Controls
+
+struct TargetHeadroomControls: View {
+    @Binding var settings: ProcessingSettings
+    let measuredHeadroom: Float
+    let onSettingsChange: () -> Void
+    let isDisabled: Bool
+    
+    private var maxLimit: Float {
+        let real = max(1.0, measuredHeadroom)
+        return real * 2.0
+    }
+    private func fmt(_ v: Float) -> String { String(format: "%.3f", v) }
+    
+    // Binding that maps optional to default 1.0
     private var targetBinding: Binding<Float> {
         Binding(
-            get: { settings.directTargetHeadroom ?? 1.0 },
-            set: { settings.directTargetHeadroom = $0; onSettingsChange() }
+            get: { settings.targetHeadroom ?? 1.0 },
+            set: { settings.targetHeadroom = $0; onSettingsChange() }
         )
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Slider: input source headroom
+        VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Input source headroom")
-                    .font(.subheadline)
-                Spacer()
-                Text(fmt(sourceBinding.wrappedValue))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-            }
-            Slider(value: sourceBinding, in: 0...maxLimit)
-                .disabled(isDisabled)
-            
-            // Slider: target headroom
-            HStack {
-                Text("Target headroom")
-                    .font(.subheadline)
+                Text("Value")
+                    .font(.caption)
                 Spacer()
                 Text(fmt(targetBinding.wrappedValue))
-                    .font(.subheadline)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
-            Slider(value: targetBinding, in: 0...maxLimit)
+            
+            Slider(value: targetBinding, in: 0.1...maxLimit)
                 .disabled(isDisabled)
             
-            HStack(spacing: 12) {
-                Button("Reset defaults") {
-                    settings.resetDirectDefaults(measuredHeadroom: max(1.0, measuredHeadroom))
-                    onImmediateChange() // Immediate (no debounce)
-                }
-                .disabled(isDisabled)
-                
-                Spacer()
-                Text("Maps directly to CIToneMapHeadroom parameters.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.top, 4)
+            Text("Normally set to 1.0 for SDR output")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
     }
