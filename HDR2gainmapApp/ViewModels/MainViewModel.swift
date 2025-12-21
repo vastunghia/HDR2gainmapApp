@@ -28,9 +28,6 @@ class MainViewModel {
     var exportProgress: Double = 0.0
     var exportCurrentFile: String = ""
     
-    // Auto-refresh preview when settings change
-    var autoRefreshPreview: Bool = true
-    
     var measuredHeadroomRaw: Float = 1.0    // Raw headroom value measured from the HDR file
     var measuredHeadroom: Float = 1.0       // Clamped convenience value (always ≥ 1.0)
     

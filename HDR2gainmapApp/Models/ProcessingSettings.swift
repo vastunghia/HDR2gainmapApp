@@ -9,7 +9,7 @@ class ProcessingSettings {
     enum TonemapMethod: String, Codable, CaseIterable {
         case peakMax     = "Peak Max"
         case percentile  = "Percentile"
-        case direct      = "Direct"      // New: explicit headroom mapping
+        case direct      = "Direct"
     }
     
     /// Tone mapping method.
@@ -40,8 +40,8 @@ class ProcessingSettings {
     var showClippedOverlay: Bool = true
     var overlayColor: String = "magenta"
     
-    // MARK: - Export
-    var heicQuality: Float = 0.97
+    // MARK: - Export quality removed (now in UserDefaults/Preferences)
+    // var heicQuality: Float = 0.97  // REMOVED
     
     init() {}
 }

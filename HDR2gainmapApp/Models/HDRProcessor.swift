@@ -174,6 +174,7 @@ class HDRProcessor {
     }
     
     /// Esporta singola immagine come HEIC con gain map
+    /// Exports a single image as HEIC with gain map
     func exportImage(_ image: HDRImage, to outputURL: URL) async throws {
         
         let hdr = try loadHDR(url: image.url)
@@ -190,16 +191,6 @@ class HDRProcessor {
             let calculated = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, image.settings.tonemapRatio))
             derivedHeadroom = calculated
             sdr = tonemap_sdr(from: hdr, headroom_ratio: calculated)
-            
-            //        case .percentile:
-            //            guard let percentileHeadroom = calculatePercentileHeadroom(
-            //                url: image.url,
-            //                percentile: image.settings.percentile
-            //            ) else {
-            //                throw ProcessingError.headroomCalculationFailed
-            //            }
-            //            derivedHeadroom = percentileHeadroom
-            //            sdr = tonemap_sdr(from: hdr, headroom_ratio: percentileHeadroom)
             
         case .percentile:
             let percentileHeadroom = try await percentileHeadroom(url: image.url, percentile: image.settings.percentile)
@@ -224,7 +215,7 @@ class HDRProcessor {
         
         let sdrFinal = sdrBase
         
-        // Genera gain map (temp HEIC)
+        // Generate gain map (temp HEIC)
         let tmp_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
             CIImageRepresentationOption.hdrImage: hdr,
@@ -255,9 +246,13 @@ class HDRProcessor {
         props[kCGImagePropertyMakerAppleDictionary as String] = maker_apple
         let sdr_with_props = sdrFinal.settingProperties(props)
         
-        // Export finale
+        // Read quality from UserDefaults (set in Preferences)
+        let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
+        let quality = (heicQuality > 0) ? heicQuality : 0.97  // Fallback to 0.97 if not set
+        
+        // Final export
         let export_options: [CIImageRepresentationOption: Any] = [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: image.settings.heicQuality,
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
             CIImageRepresentationOption.hdrGainMapImage: gain_map,
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]

@@ -12,17 +12,21 @@ struct PreferencesView: View {
         )
     }
     
+    @AppStorage("heicExportQuality")
+    private var heicExportQuality: Double = 0.97
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
                 .font(.title2.weight(.bold))
             
-            // Use a simple VStack instead of Form's label column to avoid wrapping.
+            // Export settings
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Export")
                         .font(.headline)
                     
+                    // Encoding method
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Encoding method")
                             .font(.subheadline)
@@ -35,21 +39,52 @@ struct PreferencesView: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
-                        .frame(maxWidth: 420) // keeps segments on one line on most displays
+                        .frame(maxWidth: 420)
+                    }
+                    
+                    Divider()
+                        .padding(.vertical, 4)
+                    
+                    // HEIC Quality
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("HEIC Quality")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(String(format: "%.2f", heicExportQuality))
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(value: $heicExportQuality, in: 0.5...1.0, step: 0.01)
+                        
+                        HStack {
+                            Text("Lower")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            Spacer()
+                            Text("Higher")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                     
                     Text("""
-                         Choose the Core Image writer used for final HEIF export.
-                         Default is writeHEIFRepresentation().
+                         Choose the Core Image writer used for final HEIF export and the quality level. \
+                         Higher quality produces larger files with better image fidelity.
                          """)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 }
                 .padding(14)
+                
                 HStack {
                     Spacer()
                     Button("Reset defaults") {
                         exportMethodSelectionID = ExportMethodChoice.heif.rawValue
+                        heicExportQuality = 0.97
                     }
                     .buttonStyle(.bordered)
                 }
@@ -58,7 +93,7 @@ struct PreferencesView: View {
             Spacer(minLength: 0)
         }
         .padding(24)
-        .frame(width: 640, height: 300)
+        .frame(width: 640, height: 360)
         .closeOnEscape()
     }
 }

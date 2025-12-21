@@ -39,11 +39,6 @@ struct ControlPanel: View {
                     
                     Divider()
                     
-                    // Preview refresh controls
-                    PreviewUpdatesSection(viewModel: viewModel)
-                    
-                    Divider()
-                    
                     // Tone-mapping method and parameters
                     TonemapMethodSection(
                         settings: Binding(
@@ -52,9 +47,8 @@ struct ControlPanel: View {
                         ),
                         viewModel: viewModel,
                         onSettingsChange: {
-                            if viewModel.autoRefreshPreview {
-                                viewModel.debouncedRefreshPreview()
-                            }
+                            // Auto-refresh is always enabled
+                            viewModel.debouncedRefreshPreview()
                         }
                     )
                     
@@ -85,46 +79,7 @@ struct ControlPanel: View {
     }
 }
 
-// MARK: - Preview Updates Section
-
-struct PreviewUpdatesSection: View {
-    let viewModel: MainViewModel
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Preview Updates", systemImage: "arrow.triangle.2.circlepath")
-                .font(.headline)
-            
-            Toggle("Auto-refresh preview", isOn: Binding(
-                get: { viewModel.autoRefreshPreview },
-                set: { viewModel.autoRefreshPreview = $0 }
-            ))
-            .toggleStyle(.switch)
-            .disabled(!viewModel.isCurrentImageValid)
-            
-            Button(action: {
-                viewModel.refreshPreview()
-            }) {
-                Label("Refresh Preview", systemImage: "arrow.clockwise")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-            .disabled(
-                !viewModel.isCurrentImageValid
-                || viewModel.isLoadingPreview
-                || viewModel.autoRefreshPreview
-            )
-            
-            Text(viewModel.autoRefreshPreview
-                 ? "Preview updates automatically when settings change"
-                 : "Use Refresh button to update preview manually")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal)
-    }
-}
+// MARK: - Preview Updates Section REMOVED
 
 // MARK: - Overlay Section
 
@@ -157,7 +112,7 @@ struct OverlaySection: View {
  → Updates the preview overlay only (histograms unchanged)
  
  2) Switching the tone-mapping method (e.g., peakMax → percentile):
- → refreshPreview()
+ → debouncedRefreshPreview() (immediate for method change)
  → generatePreview(refreshHistograms: true)
  → HDR histogram: cache hit if the source image didn't change
  → SDR histogram: recomputed because parameters changed
@@ -194,9 +149,8 @@ struct TonemapMethodSection: View {
             .pickerStyle(.segmented)
             .disabled(!viewModel.isCurrentImageValid)
             .onChange(of: settings.method) {
-                if viewModel.autoRefreshPreview {
-                    viewModel.refreshPreview() // Immediate (no debounce)
-                }
+                // Method changes trigger immediate refresh (no debounce)
+                viewModel.debouncedRefreshPreview()
             }
             
             // Parameters for the selected method
@@ -219,9 +173,8 @@ struct TonemapMethodSection: View {
                     measuredHeadroom: viewModel.measuredHeadroom,
                     onSettingsChange: onSettingsChange, // Slider changes are debounced
                     onImmediateChange: {
-                        if viewModel.autoRefreshPreview {
-                            viewModel.refreshPreview()   // Reset is immediate
-                        }
+                        // Reset button triggers immediate refresh
+                        viewModel.debouncedRefreshPreview()
                     },
                     isDisabled: !viewModel.isCurrentImageValid
                 )
