@@ -8,48 +8,54 @@ struct PreviewPane: View {
         VStack(spacing: 0) {
             // Preview image area
             ZStack {
+                // Background always visible (not covered by overlay)
+                Color(nsColor: .textBackgroundColor)
+                
                 if let preview = viewModel.currentPreview {
-                    // Preview is available
+                    // Preview is available - with conditional overlay above
                     Image(nsImage: preview)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    
-                    // Spinner while recomputing the preview due to settings changes (not while loading a new image).
-                    if viewModel.isLoadingPreview && !viewModel.isLoadingNewImage {
-                        // Transparent overlay that blocks user interaction.
-                        Rectangle()
-                            .fill(Color.clear)
-                            .contentShape(Rectangle())
-                            .allowsHitTesting(true)
-                            .overlay(
-                                ProgressView()
-                                    .controlSize(.large)
-                                    .scaleEffect(1.2)
-                                    .tint(.white)
-                                    .transition(.opacity)
-                            )
-                    }
-                    
-                    // Dark overlay + spinner while loading a new image.
-                    if viewModel.isLoadingNewImage {
-                        Rectangle()
-                            .fill(Color.black.opacity(0.5))  // Semi-transparent scrim.
-                            .contentShape(Rectangle())
-                            .allowsHitTesting(true)
-                            .overlay(
-                                VStack(spacing: 12) {
-                                    ProgressView()
-                                        .controlSize(.large)
-                                        .scaleEffect(1.5)
-                                        .tint(.white)
-                                    Text("Loading image...")
-                                        .font(.caption)
-                                        .foregroundStyle(.white)
+                        .overlay(
+                            Group {
+                                // Spinner while recalculates preview (no new image loading)
+                                if viewModel.isLoadingPreview && !viewModel.isLoadingNewImage {
+                                    Color.clear
+                                        .contentShape(Rectangle())
+                                        .allowsHitTesting(true)
+                                        .overlay(
+                                            ProgressView()
+                                                .controlSize(.large)
+                                                .scaleEffect(1.2)
+                                                .tint(.white)
+                                                .transition(.opacity)
+                                        )
                                 }
-                            )
-                            .transition(.opacity)
-                    }
+                            }
+                        )
+                        .overlay(
+                            Group {
+                                // Dark overlay + spinner while loading new image
+                                // LIMITED TO IMAGE
+                                if viewModel.isLoadingNewImage {
+                                    Color.black.opacity(0.5)
+                                        .contentShape(Rectangle())
+                                        .allowsHitTesting(true)
+                                        .overlay(
+                                            VStack(spacing: 12) {
+                                                ProgressView()
+                                                    .controlSize(.large)
+                                                    .scaleEffect(1.5)
+                                                    .tint(.white)
+                                                Text("Loading image...")
+                                                    .font(.caption)
+                                                    .foregroundStyle(.white)
+                                            }
+                                        )
+                                        .transition(.opacity)
+                                }
+                            }
+                        )
                     
                 } else if viewModel.selectedImage != nil {
                     // No preview yet, but an image is selected (initial state).
@@ -92,7 +98,6 @@ struct PreviewPane: View {
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(Color(nsColor: .textBackgroundColor))
                     }
                 } else {
                     // No image selected.
@@ -107,17 +112,15 @@ struct PreviewPane: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .textBackgroundColor))
             
             // Metadata bar
             if let selectedImage = viewModel.selectedImage {
                 MetadataBar(image: selectedImage, headroomRaw: viewModel.measuredHeadroomRaw)
-                    .id(selectedImage.id)  // Forces a refresh when the selected image changes.
+                    .id(selectedImage.id)
             }
         }
     }
 }
-
 
 /// Displays lightweight metadata for the selected HDR image.
 struct MetadataBar: View {
