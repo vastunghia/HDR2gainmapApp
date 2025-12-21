@@ -14,32 +14,24 @@ func formatPercentTwoSig(_ pct: Double) -> String {
 
 struct ControlPanel: View {
     @Bindable var viewModel: MainViewModel
-    let panelWidth: CGFloat  // Add this parameter
+    let panelWidth: CGFloat
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // Settings header
-                Text("Settings")
-                    .font(.title2)
-                    .fontWeight(.bold)
-                    .padding(.horizontal)
-                    .padding(.top)
+            VStack(alignment: .leading, spacing: 0) {
+                // Settings header (consistent with Histograms header)
+                HStack {
+                    Text("Settings")
+                        .font(.headline)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .background(Color(nsColor: .controlBackgroundColor))
                 
                 Divider()
                 
                 if let selectedImage = viewModel.selectedImage {
-                    // Clipped overlay
-                    OverlaySection(
-                        settings: Binding(
-                            get: { selectedImage.settings },
-                            set: { selectedImage.settings = $0 }
-                        ),
-                        viewModel: viewModel
-                    )
-                    
-                    Divider()
-                    
                     // Tone-mapping method and parameters
                     TonemapMethodSection(
                         settings: Binding(
@@ -52,11 +44,26 @@ struct ControlPanel: View {
                             viewModel.debouncedRefreshPreview()
                         }
                     )
+                    .padding(.top, 24)
+                    
+                    Divider()
+                        .padding(.top, 24)
+                    
+                    // Export header (consistent style)
+                    HStack {
+                        Text("Export")
+                            .font(.headline)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Color(nsColor: .controlBackgroundColor))
                     
                     Divider()
                     
                     // Export actions
                     ExportSection(viewModel: viewModel)
+                        .padding(.top, 12)
                 } else {
                     // No image selected
                     VStack(spacing: 12) {
@@ -75,60 +82,10 @@ struct ControlPanel: View {
                 Spacer()
             }
         }
-        .frame(width: panelWidth)  // Use dynamic width
+        .frame(width: panelWidth)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
-
-// MARK: - Preview Updates Section REMOVED
-
-// MARK: - Overlay Section
-
-struct OverlaySection: View {
-    @Binding var settings: ProcessingSettings
-    let viewModel: MainViewModel
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label("Clipped Pixels Overlay", systemImage: "paintbrush.pointed")
-                .font(.headline)
-            
-            Toggle("Show clipped pixels", isOn: $settings.showClippedOverlay)
-                .disabled(!viewModel.isCurrentImageValid)
-                .onChange(of: settings.showClippedOverlay) {
-                    // Refreshes only the visual overlay (no histogram recomputation).
-                    viewModel.refreshPreviewOnly()
-                }
-        }
-        .padding(.horizontal)
-    }
-}
-
-// MARK: - Preview Refresh Flow Notes
-
-/*
- 1) Toggling the clipped overlay:
- → refreshPreviewOnly()
- → generatePreview(refreshHistograms: false)
- → Updates the preview overlay only (histograms unchanged)
- 
- 2) Switching the tone-mapping method (e.g., peakMax → percentile):
- → debouncedRefreshPreview() (immediate for method change)
- → generatePreview(refreshHistograms: true)
- → HDR histogram: cache hit if the source image didn't change
- → SDR histogram: recomputed because parameters changed
- 
- 3) Tweaking tone-mapping parameters (sliders):
- → debouncedRefreshPreview()
- → generatePreview(refreshHistograms: true) after the debounce delay
- → HDR histogram: cache hit if the source image didn't change
- → SDR histogram: recomputed because parameters changed
- 
- 4) Selecting a new image:
- → selectImage()
- → generatePreview(refreshHistograms: true)
- → Both histograms are computed (then cached for subsequent previews)
- */
 
 // MARK: - Tonemap Method Section
 
@@ -139,9 +96,7 @@ struct TonemapMethodSection: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Tonemap Method", systemImage: "slider.horizontal.3")
-                .font(.headline)
-            
+            // Method picker (no label above)
             Picker("Method", selection: $settings.method) {
                 ForEach(ProcessingSettings.TonemapMethod.allCases, id: \.self) { method in
                     Text(method.rawValue).tag(method)
@@ -179,32 +134,6 @@ struct TonemapMethodSection: View {
                     },
                     isDisabled: !viewModel.isCurrentImageValid
                 )
-            }
-            
-            Group {
-                if viewModel.isCurrentImageValid, let stats = viewModel.clippingStats, stats.total > 0 {
-                    let pct = (Double(stats.clipped) / Double(stats.total)) * 100.0
-                    HStack(spacing: 6) {
-                        Text("Number of pixels clipped (maxRGB):")
-                            .foregroundStyle(.secondary)
-                        Text("\(stats.clipped.formatted()) (\(formatPercentTwoSig(pct)))")
-                            .fontWeight(.medium)
-                            .monospacedDigit()
-                        Spacer()
-                    }
-                    .font(.caption)
-                    .padding(.top, 6)
-                    .transition(.opacity)
-                } else {
-                    HStack(spacing: 6) {
-                        Text("Number of pixels clipped (maxRGB): – (–)")
-                            .foregroundStyle(.tertiary)
-                        Spacer()
-                    }
-                    .font(.caption)
-                    .padding(.top, 6)
-                    .transition(.opacity)
-                }
             }
         }
         .padding(.horizontal)
@@ -491,9 +420,6 @@ struct ExportSection: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label("Export", systemImage: "square.and.arrow.down")
-                .font(.headline)
-            
             Button(action: {
                 viewModel.exportCurrentImage()
             }) {

@@ -9,7 +9,7 @@ enum HistogramMode {
 /// Sidebar view rendering the HDR input histogram and the generated SDR output histogram.
 struct HistogramView: View {
     let viewModel: MainViewModel
-    let panelWidth: CGFloat  // Add this parameter
+    let panelWidth: CGFloat
     
     // Calculate histogram height based on panel width (maintain aspect ratio)
     private var histogramHeight: CGFloat {
@@ -52,9 +52,55 @@ struct HistogramView: View {
                     viewModel: viewModel
                 )
                 .frame(height: histogramHeight)
+                
+                Divider()
+                
+                // Clipped pixels toggle and stats
+                if let selectedImage = viewModel.selectedImage {
+                    VStack(alignment: .leading, spacing: 8) {
+                        // Toggle
+                        Toggle("Show clipped pixels", isOn: Binding(
+                            get: { selectedImage.settings.showClippedOverlay },
+                            set: { selectedImage.settings.showClippedOverlay = $0 }
+                        ))
+                        .disabled(!viewModel.isCurrentImageValid)
+                        .onChange(of: selectedImage.settings.showClippedOverlay) {
+                            // Refreshes only the visual overlay (no histogram recomputation).
+                            viewModel.refreshPreviewOnly()
+                        }
+                        
+                        // Clipping statistics
+                        Group {
+                            if viewModel.isCurrentImageValid, let stats = viewModel.clippingStats, stats.total > 0 {
+                                let pct = (Double(stats.clipped) / Double(stats.total)) * 100.0
+                                HStack(spacing: 6) {
+                                    Text("Number of pixels clipped (maxRGB):")
+                                        .foregroundStyle(.secondary)
+                                    Text("\(stats.clipped.formatted()) (\(formatPercentTwoSig(pct)))")
+                                        .fontWeight(.medium)
+                                        .monospacedDigit()
+                                    Spacer()
+                                }
+                                .font(.caption)
+                                .transition(.opacity)
+                            } else {
+                                HStack(spacing: 6) {
+                                    Text("Number of pixels clipped (maxRGB): – (–)")
+                                        .foregroundStyle(.tertiary)
+                                    Spacer()
+                                }
+                                .font(.caption)
+                                .transition(.opacity)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(Color(nsColor: .windowBackgroundColor))  // Standard background
+                }
             }
         }
-        .frame(width: panelWidth)  // Use dynamic width
+        .frame(width: panelWidth)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
