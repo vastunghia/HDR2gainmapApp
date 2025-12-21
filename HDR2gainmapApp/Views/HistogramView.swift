@@ -9,6 +9,17 @@ enum HistogramMode {
 /// Sidebar view rendering the HDR input histogram and the generated SDR output histogram.
 struct HistogramView: View {
     let viewModel: MainViewModel
+    let panelWidth: CGFloat  // Add this parameter
+    
+    // Calculate histogram height based on panel width (maintain aspect ratio)
+    private var histogramHeight: CGFloat {
+        // Base: 300px width -> 180px height (ratio 5:3)
+        // Scale proportionally
+        let baseWidth: CGFloat = 300
+        let baseHeight: CGFloat = 180
+        let ratio = baseHeight / baseWidth
+        return panelWidth * ratio
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -31,7 +42,7 @@ struct HistogramView: View {
                     title: "HDR Input",
                     viewModel: viewModel
                 )
-                .frame(height: 180)
+                .frame(height: histogramHeight)
                 
                 Divider()
                 
@@ -40,10 +51,10 @@ struct HistogramView: View {
                     title: "SDR Output",
                     viewModel: viewModel
                 )
-                .frame(height: 180)
+                .frame(height: histogramHeight)
             }
         }
-        .frame(width: 300)
+        .frame(width: panelWidth)  // Use dynamic width
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -460,7 +471,7 @@ struct HistogramCanvasCompact: View {
 
 #Preview {
     VStack(spacing: 0) {
-        HistogramView(viewModel: MainViewModel())
+        HistogramView(viewModel: MainViewModel(), panelWidth: 300)
         Divider()
     }
     .frame(height: 800)

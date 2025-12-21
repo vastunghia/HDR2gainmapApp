@@ -14,6 +14,7 @@ func formatPercentTwoSig(_ pct: Double) -> String {
 
 struct ControlPanel: View {
     @Bindable var viewModel: MainViewModel
+    let panelWidth: CGFloat  // Add this parameter
     
     var body: some View {
         ScrollView {
@@ -74,7 +75,7 @@ struct ControlPanel: View {
                 Spacer()
             }
         }
-        .frame(width: 300)
+        .frame(width: panelWidth)  // Use dynamic width
         .background(Color(nsColor: .windowBackgroundColor))
     }
 }
@@ -522,6 +523,6 @@ struct ExportSection: View {
 }
 
 #Preview {
-    ControlPanel(viewModel: MainViewModel())
+    ControlPanel(viewModel: MainViewModel(), panelWidth: 300)
         .frame(height: 800)
 }
