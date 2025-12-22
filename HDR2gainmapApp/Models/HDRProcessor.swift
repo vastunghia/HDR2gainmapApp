@@ -76,7 +76,7 @@ class HDRProcessor {
     
     func generatePreview(
         for image: HDRImage,
-        reportClipping: ((Int, Int) -> Void)?
+        reportClipping: ((Int, Int, DetailedClippingStats?) -> Void)?
     ) async throws -> NSImage {
         
         let baseKey = previewKey(url: image.url, settings: image.settings)
@@ -86,16 +86,16 @@ class HDRProcessor {
         if wantOverlay, let cachedOverlay = previewOverlayCache.object(forKey: baseKey) {
             if let ct = previewCountsCache.object(forKey: baseKey) as? [String: Int],
                let c = ct["c"], let t = ct["t"] {
-                reportClipping?(c, t)
+                reportClipping?(c, t, nil)  // ✅ Added nil for detailedStats
             } else {
-                reportClipping?(0, 0)
+                reportClipping?(0, 0, nil)  // ✅ Added nil
             }
             return try ciImageToNSImage(cachedOverlay)
         }
-        
+
         // 2) HIT base?
         if !wantOverlay, let cachedBase = previewBaseCache.object(forKey: baseKey) {
-            reportClipping?(0, 0)
+            reportClipping?(0, 0, nil)  // ✅ Added nil
             return try ciImageToNSImage(cachedBase)
         }
         
@@ -147,18 +147,18 @@ class HDRProcessor {
         
         // 4) If no overlay is needed, return.
         if !wantOverlay {
-            reportClipping?(0, 0)
+            reportClipping?(0, 0, nil)
             return try ciImageToNSImage(sdrBase)
         }
         
         // 5) Overlay needed → build it from the base preview.
-        if let r = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3) {
-            previewOverlayCache.setObject(r.imageWithOverlay, forKey: baseKey)
-            previewCountsCache.setObject(["c": r.clipped, "t": r.total] as NSDictionary, forKey: baseKey)
-            reportClipping?(r.clipped, r.total)
-            return try ciImageToNSImage(r.imageWithOverlay)
+        if let result = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3) {
+            previewOverlayCache.setObject(result.imageWithOverlay, forKey: baseKey)
+            previewCountsCache.setObject(["c": result.clipped, "t": result.total] as NSDictionary, forKey: baseKey)
+            reportClipping?(result.clipped, result.total, result.detailedStats)
+            return try ciImageToNSImage(result.imageWithOverlay)
         } else {
-            reportClipping?(0, 0)
+            reportClipping?(0, 0, nil)
             return try ciImageToNSImage(sdrBase)
         }
     }
@@ -675,6 +675,42 @@ class HDRProcessor {
     
     // MARK: - Overlay + count
     
+    // Struct to hold detailed clipping statistics
+    struct DetailedClippingStats {
+        let total: Int
+        
+        // Single channel clipping (bright: Y < 1)
+        let redOnly: Int
+        let greenOnly: Int
+        let blueOnly: Int
+        
+        // Two-channel clipping (bright: Y < 1)
+        let yellowBright: Int    // R+G
+        let magentaBright: Int   // R+B
+        let cyanBright: Int      // G+B
+        
+        // Single channel clipping (dim: Y ≥ 1)
+        let redDim: Int
+        let greenDim: Int
+        let blueDim: Int
+        
+        // Two-channel clipping (dim: Y ≥ 1)
+        let yellowDim: Int
+        let magentaDim: Int
+        let cyanDim: Int
+        
+        // All three channels clipped (black/white in overlay)
+        let white: Int           // R+G+B
+        
+        var totalClipped: Int {
+            redOnly + greenOnly + blueOnly +
+            yellowBright + magentaBright + cyanBright +
+            redDim + greenDim + blueDim +
+            yellowDim + magentaDim + cyanDim +
+            white
+        }
+    }
+    
     /// Multi-color overlay for clipped SDR pixels (maxRGB > 1):
     /// - red/green/blue: only R / G / B is clipped.
     /// - yellow/magenta/cyan: 2 channels clipped.
@@ -683,7 +719,14 @@ class HDRProcessor {
     func addColorizedClippingOverlayAndCount(
         sdr: CIImage,
         context: CIContext
-    ) -> (imageWithOverlay: CIImage, clipped: Int, total: Int)? {
+    ) -> (imageWithOverlay: CIImage, clipped: Int, total: Int, detailedStats: DetailedClippingStats)? {
+        
+        // Extract dimensions from the image
+        let w = Int(sdr.extent.width)
+        let h = Int(sdr.extent.height)
+        guard w > 0, h > 0 else { return nil }
+        
+        let total = w * h
         
         // --- Helpers -----------------------------------------------------------
         func extractChannel(_ img: CIImage, r: CGFloat, g: CGFloat, b: CGFloat) -> CIImage {
@@ -797,8 +840,8 @@ class HDRProcessor {
         let bMask = thresh01(bMono, threshold: thr)
         
         // --- 2) Maschera Y (luminanza) su SDR -------------------------------
-        let yMono = linear_luma(sdr)                 // Use the top-level helper function.
-        let yMask = thresh01(yMono, threshold: thr)  // 1 dove Y ≥ 1 (±eps)
+        let yMono = linear_luma(sdr)
+        let yMask = thresh01(yMono, threshold: thr)
         
         // --- 3) Mutually exclusive channel categories ------------------------------
         let notR = invert01(rMask), notG = invert01(gMask), notB = invert01(bMask)
@@ -813,8 +856,7 @@ class HDRProcessor {
         let rbOnly = andMask(andMask(rMask, bMask), notG)
         let gbOnly = andMask(andMask(gMask, bMask), notR)
         
-        // --- 4) Split “bright/dim” in base a Y ------------------------------
-        // bright: categoria ∧ ¬Y ; dim: categoria ∧ Y
+        // --- 4) Split "bright/dim" based on Y ------------------------------
         let onlyR_bright = andNot(onlyR, yMask), onlyR_dim = andMask(onlyR, yMask)
         let onlyG_bright = andNot(onlyG, yMask), onlyG_dim = andMask(onlyG, yMask)
         let onlyB_bright = andNot(onlyB, yMask), onlyB_dim = andMask(onlyB, yMask)
@@ -823,42 +865,41 @@ class HDRProcessor {
         let rb_bright = andNot(rbOnly, yMask), rb_dim = andMask(rbOnly, yMask)
         let gb_bright = andNot(gbOnly, yMask), gb_dim = andMask(gbOnly, yMask)
         
-        // --- 5) Conteggio: any channel clipped (coerente con maxRGB) --------
-        let anyMask = maxMask(maxMask(rMask, gMask), bMask)
-        let (clipped, total) = clippedCountViaAreaAverage(binaryMaskR: anyMask, context: context)
-        
-        // --- DEBUG: per-category percentages --------------------------------
-        do {
-            // Helper: compute fraction (0..1) from a binary mask (R=mask) via CIAreaAverage.
-            func fraction(_ maskR: CIImage, ctx: CIContext) -> Double {
-                let avg = CIFilter.areaAverage()
-                avg.inputImage = maskR
-                avg.extent = maskR.extent
-                let out = avg.outputImage!
-                var px = [Float](repeating: 0, count: 4)
-                ctx.render(out,
-                           toBitmap: &px,
-                           rowBytes: MemoryLayout<Float>.size * 4,
-                           bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                           format: .RGBAf,
-                           colorSpace: nil)
-                return Double(px[0].isFinite ? px[0] : 0)
-            }
-            func pct(_ x: Double) -> String { String(format: "%.3f%%", x * 100.0) }
+        // --- 5) Count pixels for each category --------------------------------
+        func countPixels(_ mask: CIImage) -> Int {
+            let (c, _) = clippedCountViaAreaAverage(binaryMaskR: mask, context: context)
+            return c
         }
         
-        // --- 6) Compositing a layer: bright → dim → black (all3) ------------
+        let detailedStats = DetailedClippingStats(
+            total: total,
+            redOnly: countPixels(onlyR_bright),
+            greenOnly: countPixels(onlyG_bright),
+            blueOnly: countPixels(onlyB_bright),
+            yellowBright: countPixels(rg_bright),
+            magentaBright: countPixels(rb_bright),
+            cyanBright: countPixels(gb_bright),
+            redDim: countPixels(onlyR_dim),
+            greenDim: countPixels(onlyG_dim),
+            blueDim: countPixels(onlyB_dim),
+            yellowDim: countPixels(rg_dim),
+            magentaDim: countPixels(rb_dim),
+            cyanDim: countPixels(gb_dim),
+            white: countPixels(all3)
+        )
+        
+        // --- 6) Compositing layers: bright → dim → black (all3) ------------
         var composited = sdr
         
-        // bright (pieni)
-        composited = layer(color: CIColor(red: 1, green: 0, blue: 0, alpha: 1), mask: onlyR_bright, over: composited) // red
-        composited = layer(color: CIColor(red: 0, green: 1, blue: 0, alpha: 1), mask: onlyG_bright, over: composited) // green
-        composited = layer(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1), mask: onlyB_bright, over: composited) // blue
-        composited = layer(color: CIColor(red: 1, green: 1, blue: 0, alpha: 1), mask: rg_bright,   over: composited) // yellow
-        composited = layer(color: CIColor(red: 1, green: 0, blue: 1, alpha: 1), mask: rb_bright,   over: composited) // magenta
-        composited = layer(color: CIColor(red: 0, green: 1, blue: 1, alpha: 1), mask: gb_bright,   over: composited) // cyan
+        // bright (full intensity)
+        composited = layer(color: CIColor(red: 1, green: 0, blue: 0, alpha: 1), mask: onlyR_bright, over: composited)
+        composited = layer(color: CIColor(red: 0, green: 1, blue: 0, alpha: 1), mask: onlyG_bright, over: composited)
+        composited = layer(color: CIColor(red: 0, green: 0, blue: 1, alpha: 1), mask: onlyB_bright, over: composited)
+        composited = layer(color: CIColor(red: 1, green: 1, blue: 0, alpha: 1), mask: rg_bright,   over: composited)
+        composited = layer(color: CIColor(red: 1, green: 0, blue: 1, alpha: 1), mask: rb_bright,   over: composited)
+        composited = layer(color: CIColor(red: 0, green: 1, blue: 1, alpha: 1), mask: gb_bright,   over: composited)
         
-        // dim (mezzo)
+        // dim (half intensity)
         composited = layer(color: CIColor(red: 0.5, green: 0,   blue: 0,   alpha: 1), mask: onlyR_dim, over: composited)
         composited = layer(color: CIColor(red: 0,   green: 0.5, blue: 0,   alpha: 1), mask: onlyG_dim, over: composited)
         composited = layer(color: CIColor(red: 0,   green: 0,   blue: 0.5, alpha: 1), mask: onlyB_dim, over: composited)
@@ -866,10 +907,10 @@ class HDRProcessor {
         composited = layer(color: CIColor(red: 0.5, green: 0,   blue: 0.5, alpha: 1), mask: rb_dim,    over: composited)
         composited = layer(color: CIColor(red: 0,   green: 0.5, blue: 0.5, alpha: 1), mask: gb_dim,    over: composited)
         
-        // Black for RGB (last, on top of everything).
+        // Black for RGB (last, on top of everything)
         composited = layer(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1), mask: all3, over: composited)
         
-        return (composited, clipped, total)
+        return (composited, detailedStats.totalClipped, total, detailedStats)
     }
     
     
@@ -1257,11 +1298,7 @@ class HDRProcessor {
         return histogram
     }
     
-    
     // Histogram cache.
     private static let HistogramCache = NSCache<NSString, HistogramCalculator.HistogramResult>()
-    
-    
-    
     
 }

@@ -6,15 +6,12 @@ struct ContentView: View {
     @State private var viewModel = MainViewModel()
     
     var body: some View {
-        // Bind Observation to enable `$viewModel.*` bindings in this view.
         @Bindable var viewModel = viewModel
         
         Group {
             if viewModel.images.isEmpty {
-                // Initial screen: folder selection.
                 FolderSelectionView(viewModel: viewModel)
             } else {
-                // Main UI: three-panel layout.
                 MainInterfaceView(viewModel: viewModel)
             }
         }
@@ -29,7 +26,6 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            // If the app launches with a preselected image, measure headroom immediately.
             if viewModel.selectedImage != nil {
                 viewModel.refreshMeasuredHeadroom()
             }

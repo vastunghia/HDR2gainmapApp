@@ -65,9 +65,18 @@ struct HistogramView: View {
                         ))
                         .disabled(!viewModel.isCurrentImageValid)
                         .onChange(of: selectedImage.settings.showClippedOverlay) {
-                            // Refreshes only the visual overlay (no histogram recomputation).
                             viewModel.refreshPreviewOnly()
                         }
+                        
+                        // Legend button
+                        Button(action: {
+                            viewModel.showLegendWindow.toggle()
+                        }) {
+                            Label("Show legend & stats", systemImage: "info.circle")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.link)
+                        .disabled(!viewModel.isCurrentImageValid || viewModel.detailedClippingStats == nil)
                         
                         // Clipping statistics
                         Group {

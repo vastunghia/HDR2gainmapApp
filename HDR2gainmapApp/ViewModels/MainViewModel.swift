@@ -28,6 +28,23 @@ class MainViewModel {
     var exportProgress: Double = 0.0
     var exportCurrentFile: String = ""
     
+    // Detailed clipping statistics
+    var detailedClippingStats: HDRProcessor.DetailedClippingStats?
+    
+    // Show legend window
+    var showLegendWindow = false {
+        didSet {
+            if showLegendWindow {
+                showLegendWindowNative()
+            } else {
+                hideLegendWindowNative()
+            }
+        }
+    }
+    
+    // Native window controller
+    private var legendWindowController: ClippingLegendWindowController?
+    
     var measuredHeadroomRaw: Float = 1.0    // Raw headroom value measured from the HDR file
     var measuredHeadroom: Float = 1.0       // Clamped convenience value (always ≥ 1.0)
     
@@ -160,7 +177,7 @@ class MainViewModel {
         self.clippingStats = nil
         
         // Generate the preview first.
-        await generatePreview(refreshHistograms: false)
+        await generatePreview(for: image, refreshHistograms: false)
         
         // Hide the "new image" spinner after the preview is ready; histograms run afterwards.
         self.isLoadingNewImage = false
@@ -204,7 +221,10 @@ class MainViewModel {
     /// Generates a preview for the selected image using the current settings.
     /// - Parameter refreshHistograms: If true, regenerates histograms after the preview finishes.
     @MainActor
-    func generatePreview(refreshHistograms: Bool = true) async {
+    func generatePreview(
+        for image: HDRImage,
+        refreshHistograms: Bool = true
+    ) async {
         // print("\n🖼️ [generatePreview] CALLED (refreshHistograms: \(refreshHistograms))")
         
         guard let image = self.selectedImage else {
@@ -222,12 +242,14 @@ class MainViewModel {
         
         do {
             // print("   → Generating preview from processor...")
-            let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total in
+            let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total, detailedStats in
                 Task { @MainActor in
                     if total > 0 {
                         self?.clippingStats = ClippingStats(clipped: clipped, total: total)
+                        self?.detailedClippingStats = detailedStats
                     } else {
                         self?.clippingStats = nil
+                        self?.detailedClippingStats = nil
                     }
                 }
             }
@@ -261,41 +283,36 @@ class MainViewModel {
     
     /// Refreshes the preview (called when the user changes settings manually).
     /// Also regenerates histograms because tone-mapping settings changed.
-    func refreshPreview() {
-        Task {
-            await generatePreview(refreshHistograms: true)
-        }
-    }
+    //    func refreshPreview() {
+    //        Task {
+    //            await generatePreview(refreshHistograms: true)
+    //        }
+    //    }
     
     /// Refreshes the preview without regenerating histograms.
     /// Used for the `showClippedOverlay` toggle (visual overlay only).
     func refreshPreviewOnly() {
-        // print("\n🎨 [refreshPreviewOnly] CALLED - overlay toggle")
-        
         guard let image = self.selectedImage else {
-            // print("   ⚠️ No image selected")
             return
         }
         
-        // Ask the processor for a preview that matches the current overlay setting.
         Task {
             do {
-                // print("   → Getting preview with current overlay setting...")
-                let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total in
+                let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total, detailedStats in  // ✅ Added detailedStats
                     Task { @MainActor in
                         if total > 0 {
                             self?.clippingStats = ClippingStats(clipped: clipped, total: total)
+                            self?.detailedClippingStats = detailedStats  // ✅ Store detailed stats
                         } else {
                             self?.clippingStats = nil
+                            self?.detailedClippingStats = nil
                         }
                     }
                 }
                 
                 self.currentPreview = preview
-                // print("   ✅ Preview updated (overlay toggled)")
-                
             } catch {
-                // print("   ❌ Preview refresh failed: \(error)")
+                // Handle error
             }
         }
     }
@@ -305,13 +322,12 @@ class MainViewModel {
     func debouncedRefreshPreview() {
         // print("\n⏱️ [debouncedRefreshPreview] CALLED")
         
-        // Cancella task precedente
         if refreshTask != nil {
             // print("   🔄 Cancelling previous refresh task")
             refreshTask?.cancel()
         }
         
-        // Feedback immediato
+        // Immediate feedback
         isLoadingPreview = true
         // print("   ⏳ isLoadingPreview = true, starting debounce timer (\(refreshDebounceInterval)s)...")
         
@@ -322,9 +338,15 @@ class MainViewModel {
                 return
             }
             
+            // ✅ Check that selectedImage exists
+            guard let image = self.selectedImage else {
+                self.isLoadingPreview = false
+                return
+            }
+            
             // print("   ✅ Debounce timer expired, calling generatePreview()...")
             // generatePreview(refreshHistograms: true) triggers generateHistograms() afterwards.
-            await generatePreview(refreshHistograms: true)
+            await generatePreview(for: image, refreshHistograms: true)
         }
     }
     
@@ -520,6 +542,20 @@ class MainViewModel {
         )
         showExportSummary = true
     }
+    
+    // MARK: - Clipping Legend / Stats Window
+    
+    private func showLegendWindowNative() {
+        if legendWindowController == nil {
+            legendWindowController = ClippingLegendWindowController(viewModel: self)
+        }
+        legendWindowController?.show()
+    }
+    
+    private func hideLegendWindowNative() {
+        legendWindowController?.hide()
+    }
+    
 }
 
 // MARK: - Export Results
