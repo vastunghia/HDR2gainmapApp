@@ -1,14 +1,11 @@
 <p align="center">
 ![HDR2gainmap Logo](HDR2gainmapApp/Assets.xcassets/AppIcon.appiconset/AppIcon_512.png)
-</p>
 
 # HDR2gainmap App
 
 A native macOS application for **converting HDR PNG images** (Display P3 PQ) to **HEIC with embedded gain maps**, providing full creative control over the SDR tone-mapping process while ensuring **seamless compatibility across the Apple ecosystem**.
 
-<p align="center">
 ![HDR2gainmap App Screenshot](screenshots/screenshot_half.png)
-</p>
 
 ## Overview
 
@@ -66,9 +63,7 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 
 **Peak Max [applies to Source Headroom only]**
 
-<p align="center">
 ![HDR2gainmap App Screenshot - Peak Max Slider](screenshots/screenshot_slider_peakmax.png)
-</p>
 
 - Derives source headroom using the formula: `1 + measuredHeadroom - measuredHeadroom^ratio`
 - The slider controls the `ratio` parameter (0.0 = no compression, 1.0 = full compression to SDR)
@@ -78,9 +73,7 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 
 **Percentile [applies to Source Headroom only]**
 
-<p align="center">
 ![HDR2gainmap App Screenshot - Percentile Slider](screenshots/screenshot_slider_percentile.png)
-</p>
 
 - Builds a cumulative distribution function (CDF) from the image's luminance histogram
 - Derives source headroom from a user-selected percentile (e.g., 99.9% = top 0.1% of pixels)
@@ -91,9 +84,7 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 
 **Direct [applies to both Source and Target Headroom]**
 
-<p align="center">
 ![HDR2gainmap App Screenshot - Direct Sliders](screenshots/screenshot_slider_direct.png)
-</p>
 
 - Exposes the raw `CIToneMapHeadroom` parameters directly
 - Source headroom: defaults to measured peak luminance
