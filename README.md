@@ -1,5 +1,6 @@
 <p align="center">
-![HDR2gainmap Logo](HDR2gainmapApp/Assets.xcassets/AppIcon.appiconset/AppIcon_512.png)
+  <img width="512" height="512" src="HDR2gainmapApp/Assets.xcassets/AppIcon.appiconset/AppIcon_512.png">
+</p>
 
 # HDR2gainmap App
 
