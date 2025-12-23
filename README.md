@@ -211,6 +211,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 - Originally inspired by the [work of **chemharuka**](https://github.com/chemharuka/toGainMapHDR)
 - Built upon my experience with the development of [a similar CLI tool](https://github.com/vastunghia/HDR2gainmap)
+- Most parts of the code were written by Claude Sonnet 4.5 and a few by ChatGPT 5.x, under my guidance
 
 ## Support
 
