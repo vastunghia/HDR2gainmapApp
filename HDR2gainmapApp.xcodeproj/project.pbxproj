@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		4931E2022EBB3C8B00A525D8 /* QuickLookThumbnailing.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4931E2012EBB3C8B00A525D8 /* QuickLookThumbnailing.framework */; };
-		49CA990C2EEA2A2300296138 /* HistogramShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = 49CA990B2EEA2A2300296138 /* HistogramShaders.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -189,7 +188,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2600;
-				LastUpgradeCheck = 2610;
+				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					49A019CE2EA821E700A03362 = {
 						CreatedOnToolsVersion = 26.0.1;
@@ -254,7 +253,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				49CA990C2EEA2A2300296138 /* HistogramShaders.metal in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
