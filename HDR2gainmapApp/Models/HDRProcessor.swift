@@ -205,38 +205,18 @@ class HDRProcessor {
             throw ProcessingError.tonemapFailed
         }
         
-        let sdrFinal = sdrBase
-        
-        // Generate gain map (temp HEIC)
-        let tmp_options: [CIImageRepresentationOption: Any] = [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
-            CIImageRepresentationOption.hdrImage: hdr,
-            CIImageRepresentationOption.hdrGainMapAsRGB: false
-        ]
-        
-        guard let tmp_data = encode_ctx.heifRepresentation(of: sdrFinal,
-                                                           format: .RGB10,
-                                                           colorSpace: p3_cs,
-                                                           options: tmp_options) else {
-            throw ProcessingError.gainMapGenerationFailed
-        }
-        
-        guard let gain_map = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
-            throw ProcessingError.gainMapExtractionFailed
-        }
-        
         // Add Apple Maker metadata.
         let maker = maker_apple_from_headroom(derivedHeadroom)
         guard let chosen = maker.default else {
             throw ProcessingError.makerAppleMetadataFailed
         }
         
-        var props = hdr.properties
+        var props = sdrBase.properties
         var maker_apple = props[kCGImagePropertyMakerAppleDictionary as String] as? [String: Any] ?? [:]
         maker_apple["33"] = chosen.maker33
         maker_apple["48"] = chosen.maker48
         props[kCGImagePropertyMakerAppleDictionary as String] = maker_apple
-        let sdr_with_props = sdrFinal.settingProperties(props)
+        let sdr_with_props = sdrBase.settingProperties(props)
         
         // Read quality from UserDefaults (set in Preferences)
         let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
@@ -245,7 +225,7 @@ class HDRProcessor {
         // Final export
         let export_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
-            CIImageRepresentationOption.hdrGainMapImage: gain_map,
+            CIImageRepresentationOption.hdrImage: hdr,
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
