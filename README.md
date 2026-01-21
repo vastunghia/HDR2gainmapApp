@@ -96,15 +96,11 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 
 ### 2. Gain Map and Apple Metadata Generation
 
-After tone-mapping, the application:
+After tone-mapping, to ensure full compatibility with Apple's HDR rendering pipeline, the application computes and embeds **Maker Apple metadata** (MakerNote tags 33 and 48) based on the derived source headroom: basically, what it does is inverting the calculation of headroom based on metadata [as documented by Apple](https://developer.apple.com/documentation/appkit/applying-apple-hdr-effect-to-your-photos).
 
-1. Generates a temporary in-memory HEIC file containing both the SDR base image and the original HDR image
-2. Extracts the **gain map** from the temporary file using Core Image's `auxiliaryHDRGainMap` option
-3. The gain map encodes the per-pixel ratio between HDR and SDR values
-4. To ensure full compatibility with Apple's HDR rendering pipeline, the application computes and embeds **Maker Apple metadata** (MakerNote tags 33 and 48) based on the derived source headroom: basically, what it does is inverting the calculation of headroom based on metadata [as documented by Apple](https://developer.apple.com/documentation/appkit/applying-apple-hdr-effect-to-your-photos).
-5. Finally, the app prepares the final HEIC file by baking together
+Finally, the app prepares the final HEIC file by baking together
 	- the base SDR image, prepared according to your taste
-	- the tone map, making the image displayable as the original HDR on proper displays
+	- the original HDR image, from which Apple API computes a gain map on the fly, making the image displayable as the original HDR on proper displays
 	- Apple Metadata, providing full Apple compatibility
 
 ### 3. Final Export
