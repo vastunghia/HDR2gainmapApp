@@ -27,13 +27,54 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		49EE586C2F2365F6009E65E0 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = /usr/share/man/man1/;
+			dstSubfolderSpec = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 1;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		4931E2012EBB3C8B00A525D8 /* QuickLookThumbnailing.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuickLookThumbnailing.framework; path = System/Library/PrivateFrameworks/QuickLookThumbnailing.framework; sourceTree = SDKROOT; };
 		49A019CF2EA821E700A03362 /* HDR2gainmapApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = HDR2gainmapApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		49A019DC2EA821E900A03362 /* HDR2gainmapAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49A019E62EA821E900A03362 /* HDR2gainmapAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49CA990B2EEA2A2300296138 /* HistogramShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; name = HistogramShaders.metal; path = HDR2gainmapApp/Utilities/HistogramShaders.metal; sourceTree = "<group>"; };
+		49EE586E2F2365F6009E65E0 /* HDR2gainmapCLI */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HDR2gainmapCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		49EE58762F236619009E65E0 /* Exceptions for "HDR2gainmapApp" folder in "HDR2gainmapCLI" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Constants/Constants.swift,
+				Models/HDRImage.swift,
+				Models/HDRProcessor.swift,
+				Models/ImageMetadata.swift,
+				Models/ProcessingError.swift,
+				Models/ProcessingSettings.swift,
+				Models/RawPixelData.swift,
+				Utilities/ExportMethodPreference.swift,
+				Utilities/HDRProcessorUtilities.swift,
+				Utilities/HistogramCalculator.swift,
+				Utilities/HistogramShaders.metal,
+				Utilities/MetalHistogramCalculator.swift,
+			);
+			target = 49EE586D2F2365F6009E65E0 /* HDR2gainmapCLI */;
+		};
+		49EE588B2F2367C1009E65E0 /* Exceptions for "Scripts" folder in "HDR2gainmapApp" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				verify_export.swift,
+			);
+			target = 49A019CE2EA821E700A03362 /* HDR2gainmapApp */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		49A019DF2EA821E900A03362 /* HDR2gainmapAppTests */ = {
@@ -48,7 +89,23 @@
 		};
 		49A7F3642EE30245008B671F /* HDR2gainmapApp */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				49EE58762F236619009E65E0 /* Exceptions for "HDR2gainmapApp" folder in "HDR2gainmapCLI" target */,
+			);
 			path = HDR2gainmapApp;
+			sourceTree = "<group>";
+		};
+		49EE586F2F2365F6009E65E0 /* HDR2gainmapCLI */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = HDR2gainmapCLI;
+			sourceTree = "<group>";
+		};
+		49EE58812F236692009E65E0 /* Scripts */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				49EE588B2F2367C1009E65E0 /* Exceptions for "Scripts" folder in "HDR2gainmapApp" target */,
+			);
+			path = Scripts;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -76,6 +133,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		49EE586B2F2365F6009E65E0 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -90,9 +154,11 @@
 		49A019C62EA821E700A03362 = {
 			isa = PBXGroup;
 			children = (
+				49EE58812F236692009E65E0 /* Scripts */,
 				49CA990B2EEA2A2300296138 /* HistogramShaders.metal */,
 				49A019DF2EA821E900A03362 /* HDR2gainmapAppTests */,
 				49A019E92EA821E900A03362 /* HDR2gainmapAppUITests */,
+				49EE586F2F2365F6009E65E0 /* HDR2gainmapCLI */,
 				4931E2002EBB3C8B00A525D8 /* Frameworks */,
 				49A019D02EA821E700A03362 /* Products */,
 				49A7F3642EE30245008B671F /* HDR2gainmapApp */,
@@ -105,6 +171,7 @@
 				49A019CF2EA821E700A03362 /* HDR2gainmapApp.app */,
 				49A019DC2EA821E900A03362 /* HDR2gainmapAppTests.xctest */,
 				49A019E62EA821E900A03362 /* HDR2gainmapAppUITests.xctest */,
+				49EE586E2F2365F6009E65E0 /* HDR2gainmapCLI */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -126,6 +193,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				49A7F3642EE30245008B671F /* HDR2gainmapApp */,
+				49EE58812F236692009E65E0 /* Scripts */,
 			);
 			name = HDR2gainmapApp;
 			packageProductDependencies = (
@@ -180,6 +248,28 @@
 			productReference = 49A019E62EA821E900A03362 /* HDR2gainmapAppUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		49EE586D2F2365F6009E65E0 /* HDR2gainmapCLI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 49EE58742F2365F6009E65E0 /* Build configuration list for PBXNativeTarget "HDR2gainmapCLI" */;
+			buildPhases = (
+				49EE586A2F2365F6009E65E0 /* Sources */,
+				49EE586B2F2365F6009E65E0 /* Frameworks */,
+				49EE586C2F2365F6009E65E0 /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				49EE586F2F2365F6009E65E0 /* HDR2gainmapCLI */,
+			);
+			name = HDR2gainmapCLI;
+			packageProductDependencies = (
+			);
+			productName = HDR2gainmapCLI;
+			productReference = 49EE586E2F2365F6009E65E0 /* HDR2gainmapCLI */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -187,7 +277,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2600;
+				LastSwiftUpdateCheck = 2620;
 				LastUpgradeCheck = 2620;
 				TargetAttributes = {
 					49A019CE2EA821E700A03362 = {
@@ -200,6 +290,9 @@
 					49A019E52EA821E900A03362 = {
 						CreatedOnToolsVersion = 26.0.1;
 						TestTargetID = 49A019CE2EA821E700A03362;
+					};
+					49EE586D2F2365F6009E65E0 = {
+						CreatedOnToolsVersion = 26.2;
 					};
 				};
 			};
@@ -220,6 +313,7 @@
 				49A019CE2EA821E700A03362 /* HDR2gainmapApp */,
 				49A019DB2EA821E900A03362 /* HDR2gainmapAppTests */,
 				49A019E52EA821E900A03362 /* HDR2gainmapAppUITests */,
+				49EE586D2F2365F6009E65E0 /* HDR2gainmapCLI */,
 			);
 		};
 /* End PBXProject section */
@@ -264,6 +358,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		49A019E22EA821E900A03362 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		49EE586A2F2365F6009E65E0 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -590,6 +691,32 @@
 			};
 			name = Release;
 		};
+		49EE58722F2365F6009E65E0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7PW62W8KVP;
+				ENABLE_HARDENED_RUNTIME = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		49EE58732F2365F6009E65E0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7PW62W8KVP;
+				ENABLE_HARDENED_RUNTIME = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -625,6 +752,15 @@
 			buildConfigurations = (
 				49A019F72EA821E900A03362 /* Debug */,
 				49A019F82EA821E900A03362 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		49EE58742F2365F6009E65E0 /* Build configuration list for PBXNativeTarget "HDR2gainmapCLI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				49EE58722F2365F6009E65E0 /* Debug */,
+				49EE58732F2365F6009E65E0 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

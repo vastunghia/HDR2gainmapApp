@@ -1,0 +1,106 @@
+name: Test Export on macOS 26
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  test-cli-export:
+    runs-on: macos-26-arm64  # macOS 26 preview
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+    
+    - name: Display system information
+      run: |
+        echo "=== System Information ==="
+        sw_vers
+        echo ""
+        echo "=== Xcode Version ==="
+        xcodebuild -version
+        echo ""
+        echo "=== Metal Support ==="
+        system_profiler SPDisplaysDataType | grep -A 2 "Metal"
+    
+    - name: Prepare test assets directory
+      run: mkdir -p TestAssets
+    
+    - name: Verify test HDR image exists
+      run: |
+        if [ -f "TestAssets/test_in.png" ]; then
+          echo "✅ Test HDR image found: TestAssets/test_in.png"
+          ls -lh TestAssets/test_in.png
+        else
+          echo "❌ Test HDR image not found!"
+          echo "Expected: TestAssets/test_in.png"
+          exit 1
+        fi
+    
+    - name: Build CLI tool
+      run: |
+        echo "🔨 Building HDR2gainmapCLI..."
+        xcodebuild \
+          -project HDR2gainmapApp.xcodeproj \
+          -scheme HDR2gainmapCLI \
+          -configuration Release \
+          -derivedDataPath ./build \
+          clean build \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+    
+    - name: Locate CLI binary
+      id: cli_path
+      run: |
+        CLI_PATH=$(find ./build/Build/Products/Release -name "HDR2gainmapCLI" -type f | head -n 1)
+        echo "cli_path=$CLI_PATH" >> $GITHUB_OUTPUT
+        echo "✅ Found CLI at: $CLI_PATH"
+        
+        # Verify it's executable
+        chmod +x "$CLI_PATH"
+        "$CLI_PATH" || echo "CLI exists but requires input arguments"
+    
+    - name: Run export test (DISABLED - needs test image)
+      if: true
+      run: |
+        CLI_PATH="${{ steps.cli_path.outputs.cli_path }}"
+        
+        echo "🧪 Running export test..."
+        "$CLI_PATH" \
+          TestAssets/test_in.png \
+          TestAssets/test_out.heic \
+          --verbose \
+          --verify
+    
+    - name: Verify exported image with standalone script (DISABLED - needs test image)
+      if: true  # Enable this when you have a test image
+      run: |
+        echo "🔍 Running standalone verification..."
+        swift Scripts/verify_export.swift TestAssets/test_out.heic
+    
+    - name: Upload test artifacts
+      if: always() && false  # Enable when test runs
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-outputs-macos26
+        path: |
+          TestAssets/test_out.heic
+          TestAssets/*.log
+        retention-days: 7
+    
+    # 🔧 OPTIONAL: tmate session for interactive debugging
+    - name: Setup tmate debug session
+      if: failure() || (github.event_name == 'workflow_dispatch' && github.event.inputs.debug == 'true')
+      uses: mxschmitt/action-tmate@v3
+      timeout-minutes: 30
+      with:
+        limit-access-to-actor: true
