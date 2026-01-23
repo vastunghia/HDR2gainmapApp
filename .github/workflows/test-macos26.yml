@@ -1,10 +1,10 @@
 name: Test Export on macOS 26
 
 on:
-  push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+  # push:
+  #   branches: [ main, develop ]
+  # pull_request:
+  #   branches: [ main ]
   workflow_dispatch:  # Allows manual trigger
 
 jobs:
