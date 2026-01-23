@@ -34,7 +34,7 @@ jobs:
     - name: Prepare test assets directory
       run: mkdir -p TestAssets
     
-- name: Verify test HDR image exists
+    - name: Verify test HDR image exists
       run: |
         if [ -f "TestAssets/test_in.png" ]; then
           echo "✅ Test HDR image found: TestAssets/test_in.png"
