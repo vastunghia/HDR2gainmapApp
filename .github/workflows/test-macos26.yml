@@ -34,7 +34,7 @@ jobs:
     - name: Prepare test assets directory
       run: mkdir -p TestAssets
     
-    - name: Verify test HDR image exists
+- name: Verify test HDR image exists
       run: |
         if [ -f "TestAssets/test_in.png" ]; then
           echo "✅ Test HDR image found: TestAssets/test_in.png"
@@ -69,8 +69,7 @@ jobs:
         chmod +x "$CLI_PATH"
         "$CLI_PATH" || echo "CLI exists but requires input arguments"
     
-    - name: Run export test (DISABLED - needs test image)
-      if: true
+    - name: Run export test
       run: |
         CLI_PATH="${{ steps.cli_path.outputs.cli_path }}"
         
@@ -81,25 +80,23 @@ jobs:
           --verbose \
           --verify
     
-    - name: Verify exported image with standalone script (DISABLED - needs test image)
-      if: true  # Enable this when you have a test image
+    - name: Verify exported image with standalone script
       run: |
         echo "🔍 Running standalone verification..."
         swift Scripts/verify_export.swift TestAssets/test_out.heic
     
     - name: Upload test artifacts
-      if: always() && false  # Enable when test runs
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: test-outputs-macos26
         path: |
           TestAssets/test_out.heic
-          TestAssets/*.log
         retention-days: 7
     
     # 🔧 OPTIONAL: tmate session for interactive debugging
     - name: Setup tmate debug session
-      if: failure() || (github.event_name == 'workflow_dispatch' && github.event.inputs.debug == 'true')
+      if: failure()
       uses: mxschmitt/action-tmate@v3
       timeout-minutes: 30
       with:
