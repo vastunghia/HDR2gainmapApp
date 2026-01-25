@@ -5,11 +5,11 @@ on:
   #   branches: [ main, develop ]
   # pull_request:
   #   branches: [ main ]
-  workflow_dispatch:  # Allows manual trigger
+  workflow_dispatch:
 
 jobs:
   test-cli-export:
-    runs-on: macos-26-arm64  # macOS 26 preview
+    runs-on: macos-26
     
     steps:
     - name: Checkout repository
@@ -31,17 +31,15 @@ jobs:
         echo "=== Metal Support ==="
         system_profiler SPDisplaysDataType | grep -A 2 "Metal"
     
-    - name: Prepare test assets directory
-      run: mkdir -p TestAssets
-    
+    # ✅ Verifica semplicemente che il file committato esista
     - name: Verify test HDR image exists
       run: |
         if [ -f "TestAssets/test_in.png" ]; then
           echo "✅ Test HDR image found: TestAssets/test_in.png"
           ls -lh TestAssets/test_in.png
         else
-          echo "❌ Test HDR image not found!"
-          echo "Expected: TestAssets/test_in.png"
+          echo "❌ Test HDR image not found in repository!"
+          echo "Make sure TestAssets/test_in.png is committed."
           exit 1
         fi
     
@@ -64,10 +62,7 @@ jobs:
         CLI_PATH=$(find ./build/Build/Products/Release -name "HDR2gainmapCLI" -type f | head -n 1)
         echo "cli_path=$CLI_PATH" >> $GITHUB_OUTPUT
         echo "✅ Found CLI at: $CLI_PATH"
-        
-        # Verify it's executable
         chmod +x "$CLI_PATH"
-        "$CLI_PATH" || echo "CLI exists but requires input arguments"
     
     - name: Run export test
       run: |
@@ -76,14 +71,14 @@ jobs:
         echo "🧪 Running export test..."
         "$CLI_PATH" \
           TestAssets/test_in.png \
-          TestAssets/test_out.heic \
+          TestAssets/test_out_macos26.heic \
           --verbose \
           --verify
     
     - name: Verify exported image with standalone script
       run: |
         echo "🔍 Running standalone verification..."
-        swift Scripts/verify_export.swift TestAssets/test_out.heic
+        swift Scripts/verify_export.swift TestAssets/test_out_macos26.heic
     
     - name: Upload test artifacts
       if: always()
@@ -91,13 +86,102 @@ jobs:
       with:
         name: test-outputs-macos26
         path: |
-          TestAssets/test_out.heic
+          TestAssets/test_out_macos26.heic
         retention-days: 7
     
-    # 🔧 OPTIONAL: tmate session for interactive debugging
     - name: Setup tmate debug session
       if: failure()
       uses: mxschmitt/action-tmate@v3
       timeout-minutes: 30
       with:
         limit-access-to-actor: true
+
+  test-cli-export-macos15:
+    name: Test on macOS 15
+    runs-on: macos-15  # Disponibile immediatamente!
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Xcode
+      uses: maxim-lobanov/setup-xcode@v1
+      with:
+        xcode-version: latest-stable
+    
+    - name: Display system information
+      run: |
+        echo "=== System Information ==="
+        sw_vers
+        echo ""
+        echo "=== Xcode Version ==="
+        xcodebuild -version
+        echo ""
+        echo "=== Metal Support ==="
+        system_profiler SPDisplaysDataType | grep -A 2 "Metal"
+    
+    # ✅ Verifica semplicemente che il file committato esista
+    - name: Verify test HDR image exists
+      run: |
+        if [ -f "TestAssets/test_in.png" ]; then
+          echo "✅ Test HDR image found: TestAssets/test_in.png"
+          ls -lh TestAssets/test_in.png
+        else
+          echo "❌ Test HDR image not found in repository!"
+          echo "Make sure TestAssets/test_in.png is committed."
+          exit 1
+        fi
+    
+    - name: Build CLI tool
+      run: |
+        echo "🔨 Building HDR2gainmapCLI..."
+        xcodebuild \
+          -project HDR2gainmapApp.xcodeproj \
+          -scheme HDR2gainmapCLI \
+          -configuration Release \
+          -derivedDataPath ./build \
+          clean build \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+    
+    - name: Locate CLI binary
+      id: cli_path
+      run: |
+        CLI_PATH=$(find ./build/Build/Products/Release -name "HDR2gainmapCLI" -type f | head -n 1)
+        echo "cli_path=$CLI_PATH" >> $GITHUB_OUTPUT
+        echo "✅ Found CLI at: $CLI_PATH"
+        chmod +x "$CLI_PATH"
+    
+    - name: Run export test
+      run: |
+        CLI_PATH="${{ steps.cli_path.outputs.cli_path }}"
+        
+        echo "🧪 Running export test..."
+        "$CLI_PATH" \
+          TestAssets/test_in.png \
+          TestAssets/test_out_macos15.heic \
+          --verbose \
+          --verify
+    
+    - name: Verify exported image with standalone script
+      run: |
+        echo "🔍 Running standalone verification..."
+        swift Scripts/verify_export.swift TestAssets/test_out_macos15.heic
+
+    - name: Upload test artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-outputs-macos26
+        path: |
+          TestAssets/test_out_macos15.heic
+        retention-days: 7
+    
+    - name: Setup tmate debug session
+      if: failure()
+      uses: mxschmitt/action-tmate@v3
+      timeout-minutes: 30
+      with:
+        limit-access-to-actor: true
+      
