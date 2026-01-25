@@ -24,13 +24,16 @@ jobs:
     - name: Display system information
       run: |
         echo "=== System Information ==="
-        sw_vers
+        sw_vers || true
         echo ""
         echo "=== Xcode Version ==="
-        xcodebuild -version
+        xcodebuild -version || true
         echo ""
         echo "=== Metal Support ==="
-        system_profiler SPDisplaysDataType | grep -A 2 "Metal"
+        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "metal" || echo "Metal info not available"
+        echo ""
+        echo "=== GPU Information ==="
+        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "chipset" || echo "GPU info not available"
     
     # ✅ Verifica semplicemente che il file committato esista
     - name: Verify test HDR image exists
@@ -99,7 +102,7 @@ jobs:
 
   test-cli-export-macos15:
     name: Test on macOS 15
-    runs-on: macos-15  # Disponibile immediatamente!
+    runs-on: macos-15
 
     steps:
     - name: Checkout repository
@@ -113,13 +116,16 @@ jobs:
     - name: Display system information
       run: |
         echo "=== System Information ==="
-        sw_vers
+        sw_vers || true
         echo ""
         echo "=== Xcode Version ==="
-        xcodebuild -version
+        xcodebuild -version || true
         echo ""
         echo "=== Metal Support ==="
-        system_profiler SPDisplaysDataType | grep -A 2 "Metal"
+        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "metal" || echo "Metal info not available"
+        echo ""
+        echo "=== GPU Information ==="
+        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "chipset" || echo "GPU info not available"
     
     # ✅ Verifica semplicemente che il file committato esista
     - name: Verify test HDR image exists
@@ -174,7 +180,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: test-outputs-macos26
+        name: test-outputs-macos15
         path: |
           TestAssets/test_out_macos15.heic
         retention-days: 7
