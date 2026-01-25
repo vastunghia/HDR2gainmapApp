@@ -1,4 +1,4 @@
-name: Test Export on macOS 26
+name: Test Export on macOS 15 and 26
 
 on:
   # push:
@@ -8,7 +8,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-cli-export:
+  test-cli-export-macos26:
+    name: Test on macOS 26
     runs-on: macos-26
     
     steps:
@@ -89,12 +90,12 @@ jobs:
           TestAssets/test_out_macos26.heic
         retention-days: 7
     
-    - name: Setup tmate debug session
-      if: failure()
-      uses: mxschmitt/action-tmate@v3
-      timeout-minutes: 30
-      with:
-        limit-access-to-actor: true
+    # - name: Setup tmate debug session
+    #   if: failure()
+    #   uses: mxschmitt/action-tmate@v3
+    #   timeout-minutes: 30
+    #   with:
+    #     limit-access-to-actor: true
 
   test-cli-export-macos15:
     name: Test on macOS 15
@@ -178,10 +179,10 @@ jobs:
           TestAssets/test_out_macos15.heic
         retention-days: 7
     
-    - name: Setup tmate debug session
-      if: failure()
-      uses: mxschmitt/action-tmate@v3
-      timeout-minutes: 30
-      with:
-        limit-access-to-actor: true
+    # - name: Setup tmate debug session
+    #   if: failure()
+    #   uses: mxschmitt/action-tmate@v3
+    #   timeout-minutes: 30
+    #   with:
+    #     limit-access-to-actor: true
       
