@@ -78,8 +78,7 @@ jobs:
         "$CLI_PATH" \
           TestAssets/test_in.png \
           TestAssets/test_out_macos26.heic \
-          --verbose \
-          --verify
+          --verbose
     
     - name: Verify exported image with standalone script
       run: |
@@ -172,8 +171,7 @@ jobs:
         "$CLI_PATH" \
           TestAssets/test_in.png \
           TestAssets/test_out_macos15.heic \
-          --verbose \
-          --verify
+          --verbose
     
     - name: Verify exported image with standalone script
       run: |
