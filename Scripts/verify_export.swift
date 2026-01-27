@@ -5,8 +5,11 @@ import ImageIO
 import CoreGraphics
 
 func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, details: String) {
-    guard let url = URL(string: "file://\(path)"),
-          let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+    
+    let expandedPath = NSString(string: path).expandingTildeInPath
+    let url = URL(fileURLWithPath: expandedPath)  // ✅ Gestisce automaticamente path relativi
+    
+    guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
         return (false, false, "❌ Cannot open file: \(path)")
     }
     
