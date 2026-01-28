@@ -207,6 +207,11 @@ class HDRProcessor {
         
         let sdrFinal = sdrBase
         
+        print("📊 [Export Debug]")
+        print("   Output URL: \(outputURL.path)")
+        print("   SDR extent: \(sdrFinal.extent)")
+        print("   HDR extent: \(hdr.extent)")
+        
         // Generate gain map (temp HEIC)
         let tmp_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
@@ -214,12 +219,40 @@ class HDRProcessor {
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
-        guard let tmp_data = encode_ctx.heifRepresentation(of: sdrFinal,
-                                                           format: .RGB10,
-                                                           colorSpace: p3_cs,
-                                                           options: tmp_options) else {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("heic")
+        
+        print("   Creating temp file at: \(tempURL.path)")
+        
+        do {
+            try encode_ctx.writeHEIFRepresentation(
+                of: sdrFinal,
+                to: tempURL,
+                format: .RGBA8,  // Più compatibile di RGB10
+                colorSpace: p3_cs,
+                options: tmp_options
+            )
+            
+            print("   ✅ Temp file written successfully")
+            
+        } catch {
+            print("   ❌ writeHEIFRepresentation failed: \(error)")
+            try? FileManager.default.removeItem(at: tempURL)
             throw ProcessingError.gainMapGenerationFailed
         }
+        
+        // Leggi il file
+        guard let tmp_data = try? Data(contentsOf: tempURL) else {
+            print("   ❌ Failed to read temp file")
+            try? FileManager.default.removeItem(at: tempURL)
+            throw ProcessingError.gainMapGenerationFailed
+        }
+        
+        print("   ✅ Read temp file: \(tmp_data.count) bytes")
+        
+        // Pulisci
+        try? FileManager.default.removeItem(at: tempURL)
         
         guard let gain_map = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
             throw ProcessingError.gainMapExtractionFailed
@@ -249,20 +282,20 @@ class HDRProcessor {
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
-//        let method = resolveExportMethodPreference()
-//        switch method {
-//        case .heif:
-//            try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
-//                                                   to: outputURL,
-//                                                   format: .RGB10,
-//                                                   colorSpace: p3_cs,
-//                                                   options: export_options)
-//        case .heif10:
-        try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
-                                                 to: outputURL,
-                                                 colorSpace: p3_cs,
-                                                 options: export_options)
-//        }
+        let method = resolveExportMethodPreference()
+        switch method {
+        case .heif:
+            try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
+                                                   to: outputURL,
+                                                   format: .RGB10,
+                                                   colorSpace: p3_cs,
+                                                   options: export_options)
+        case .heif10:
+            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
+                                                     to: outputURL,
+                                                     colorSpace: p3_cs,
+                                                     options: export_options)
+        }
     }
     
     // MARK: - Percentile Headroom (Real-time UI)
