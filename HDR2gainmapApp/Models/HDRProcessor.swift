@@ -207,61 +207,12 @@ class HDRProcessor {
         
         let sdrFinal = sdrBase
         
-        // ✅ LOGGING DETTAGLIATO
-        print("📊 [Export Debug]")
-        print("   Working in: \(FileManager.default.currentDirectoryPath)")
-        print("   Output URL: \(outputURL.path)")
-        print("   SDR extent: \(sdrFinal.extent)")
-        print("   HDR extent: \(hdr.extent)")
-        
-        // Check Metal availability
-        if MTLCreateSystemDefaultDevice() != nil {
-            print("   Metal: ✅ Available")
-        } else {
-            print("   Metal: ❌ NOT available - using CPU fallback")
-        }
-        
-        
         // Generate gain map (temp HEIC)
         let tmp_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
             CIImageRepresentationOption.hdrImage: hdr,
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
-        
-        print("   Attempting heifRepresentation with format: RGB10")
-        
-        // ✅ TRY MULTIPLE FORMATS
-        var tmp_data: Data? = nil
-        
-        // Prova prima RGB10
-        tmp_data = encode_ctx.heifRepresentation(of: sdrFinal,
-                                                 format: .RGB10,
-                                                 colorSpace: p3_cs,
-                                                 options: tmp_options)
-        
-        if tmp_data == nil {
-            print("   ⚠️  RGB10 failed, trying RGBA8...")
-            tmp_data = encode_ctx.heifRepresentation(of: sdrFinal,
-                                                     format: .RGBA8,
-                                                     colorSpace: p3_cs,
-                                                     options: tmp_options)
-        }
-        
-        if tmp_data == nil {
-            print("   ⚠️  RGBA8 failed, trying RGBAf...")
-            tmp_data = encode_ctx.heifRepresentation(of: sdrFinal,
-                                                     format: .RGBAf,
-                                                     colorSpace: p3_cs,
-                                                     options: tmp_options)
-        }
-        
-        guard let validData = tmp_data else {
-            print("   ❌ All formats failed!")
-            throw ProcessingError.gainMapGenerationFailed
-        }
-        
-        print("   ✅ Generated temp HEIC: \(validData.count) bytes")
         
         guard let tmp_data = encode_ctx.heifRepresentation(of: sdrFinal,
                                                            format: .RGB10,
