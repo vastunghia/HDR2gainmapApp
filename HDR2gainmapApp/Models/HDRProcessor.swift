@@ -209,50 +209,34 @@ class HDRProcessor {
         
         print("📊 [Export Debug]")
         print("   Output URL: \(outputURL.path)")
-        print("   SDR extent: \(sdrFinal.extent)")
-        print("   HDR extent: \(hdr.extent)")
         
-        // Generate gain map (temp HEIC)
+        // Generate gain map (temp HEIC) con OPZIONI SOFTWARE ENCODER
         let tmp_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
             CIImageRepresentationOption.hdrImage: hdr,
-            CIImageRepresentationOption.hdrGainMapAsRGB: false
+            CIImageRepresentationOption.hdrGainMapAsRGB: false,
+            // ✅ CHIAVE: Disabilita hardware encoding
+            kCGImageDestinationOptimizeColorForSharing as CIImageRepresentationOption: false,
         ]
         
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString)
-            .appendingPathExtension("heic")
+        // METODO ALTERNATIVO: Usa heifRepresentation in memoria ma con context CPU
+        let cpuContext = CIContext(options: [
+            .useSoftwareRenderer: true,  // ✅ Forza CPU
+            .workingColorSpace: linear_p3,
+            .outputColorSpace: p3_cs
+        ])
         
-        print("   Creating temp file at: \(tempURL.path)")
-        
-        do {
-            try encode_ctx.writeHEIFRepresentation(
-                of: sdrFinal,
-                to: tempURL,
-                format: .RGBA8,  // Più compatibile di RGB10
-                colorSpace: p3_cs,
-                options: tmp_options
-            )
-            
-            print("   ✅ Temp file written successfully")
-            
-        } catch {
-            print("   ❌ writeHEIFRepresentation failed: \(error)")
-            try? FileManager.default.removeItem(at: tempURL)
+        guard let tmp_data = cpuContext.heifRepresentation(
+            of: sdrFinal,
+            format: .RGBA8,
+            colorSpace: p3_cs,
+            options: tmp_options
+        ) else {
+            print("   ❌ CPU heifRepresentation failed")
             throw ProcessingError.gainMapGenerationFailed
         }
         
-        // Leggi il file
-        guard let tmp_data = try? Data(contentsOf: tempURL) else {
-            print("   ❌ Failed to read temp file")
-            try? FileManager.default.removeItem(at: tempURL)
-            throw ProcessingError.gainMapGenerationFailed
-        }
-        
-        print("   ✅ Read temp file: \(tmp_data.count) bytes")
-        
-        // Pulisci
-        try? FileManager.default.removeItem(at: tempURL)
+        print("   ✅ Generated temp HEIC (CPU): \(tmp_data.count) bytes")
         
         guard let gain_map = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
             throw ProcessingError.gainMapExtractionFailed
