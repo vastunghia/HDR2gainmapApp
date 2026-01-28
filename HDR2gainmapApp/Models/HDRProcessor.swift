@@ -2,6 +2,7 @@ import Foundation
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import AppKit
+import UniformTypeIdentifiers
 
 /// Bridge between the CLI pipeline and SwiftUI; orchestrates HDR image processing.
 @MainActor
@@ -205,39 +206,77 @@ class HDRProcessor {
             throw ProcessingError.tonemapFailed
         }
         
-        let sdrFinal = sdrBase
+        guard let sdrBase = sdr else {
+            throw ProcessingError.tonemapFailed
+        }
         
         print("📊 [Export Debug]")
         print("   Output URL: \(outputURL.path)")
         
-        // Generate gain map (temp HEIC) con OPZIONI SOFTWARE ENCODER
-        let tmp_options: [CIImageRepresentationOption: Any] = [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
-            CIImageRepresentationOption.hdrImage: hdr,
-            CIImageRepresentationOption.hdrGainMapAsRGB: false,
-            // ✅ CHIAVE: Disabilita hardware encoding
-            kCGImageDestinationOptimizeColorForSharing as CIImageRepresentationOption: false,
-        ]
+        // ✅ METODO ALTERNATIVO: Usa CGImageDestination direttamente
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("heic")
         
-        // METODO ALTERNATIVO: Usa heifRepresentation in memoria ma con context CPU
-        let cpuContext = CIContext(options: [
-            .useSoftwareRenderer: true,  // ✅ Forza CPU
-            .workingColorSpace: linear_p3,
-            .outputColorSpace: p3_cs
-        ])
+        print("   Creating temp file with CGImageDestination...")
         
-        guard let tmp_data = cpuContext.heifRepresentation(
-            of: sdrFinal,
-            format: .RGBA8,
-            colorSpace: p3_cs,
-            options: tmp_options
+        // Render SDR a CGImage (in memoria)
+        guard let sdrCGImage = encode_ctx.createCGImage(sdrBase, from: sdrBase.extent) else {
+            print("   ❌ Failed to create CGImage from SDR")
+            throw ProcessingError.tonemapFailed
+        }
+        
+        // Render HDR a CGImage (in memoria)
+        guard let hdrCGImage = encode_ctx.createCGImage(hdr, from: hdr.extent) else {
+            print("   ❌ Failed to create CGImage from HDR")
+            throw ProcessingError.tonemapFailed
+        }
+        
+        // Crea destination HEIC
+        guard let destination = CGImageDestinationCreateWithURL(
+            tempURL as CFURL,
+            UTType.heic.identifier as CFString,
+            1,  // 1 immagine
+            nil
         ) else {
-            print("   ❌ CPU heifRepresentation failed")
+            print("   ❌ Failed to create CGImageDestination")
             throw ProcessingError.gainMapGenerationFailed
         }
         
-        print("   ✅ Generated temp HEIC (CPU): \(tmp_data.count) bytes")
+        // Opzioni per la destination (con HDR come auxiliary)
+        let imageProperties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: 1.0,
+            // ✅ Aggiungi HDR come auxiliary image
+            kCGImagePropertyAuxiliaryData: [
+                kCGImageAuxiliaryDataTypeHDRGainMap: hdrCGImage
+            ] as CFDictionary
+        ]
         
+        // Aggiungi l'immagine SDR con le properties
+        CGImageDestinationAddImage(destination, sdrCGImage, imageProperties as CFDictionary)
+        
+        // Finalizza (scrive il file)
+        guard CGImageDestinationFinalize(destination) else {
+            print("   ❌ CGImageDestinationFinalize failed")
+            try? FileManager.default.removeItem(at: tempURL)
+            throw ProcessingError.gainMapGenerationFailed
+        }
+        
+        print("   ✅ Temp file created with CGImageDestination")
+        
+        // Leggi il file per estrarre la gain map
+        guard let tmp_data = try? Data(contentsOf: tempURL) else {
+            print("   ❌ Failed to read temp file")
+            try? FileManager.default.removeItem(at: tempURL)
+            throw ProcessingError.gainMapGenerationFailed
+        }
+        
+        print("   ✅ Read temp file: \(tmp_data.count) bytes")
+        
+        // Pulisci
+        try? FileManager.default.removeItem(at: tempURL)
+        
+        // Estrai gain map
         guard let gain_map = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
             throw ProcessingError.gainMapExtractionFailed
         }
