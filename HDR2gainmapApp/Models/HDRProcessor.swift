@@ -205,17 +205,45 @@ class HDRProcessor {
             throw ProcessingError.tonemapFailed
         }
         
-        // Add Apple Maker metadata.
+        // Extract metadata from the original HDR PNG file
+        let originalMetadata = extractMetadata(from: image.url)
+        print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
+        
+        // Generate gain map (temp HEIC)
+        let tmp_options: [CIImageRepresentationOption: Any] = [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
+            CIImageRepresentationOption.hdrImage: hdr,
+            CIImageRepresentationOption.hdrGainMapAsRGB: false
+        ]
+        
+        guard let tmp_data = encode_ctx.heifRepresentation(of: sdrBase,
+                                                           format: .RGB10,
+                                                           colorSpace: p3_cs,
+                                                           options: tmp_options) else {
+            throw ProcessingError.gainMapGenerationFailed
+        }
+        
+        guard let gain_map = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
+            throw ProcessingError.gainMapExtractionFailed
+        }
+        
+        // Add Apple Maker metadata + merge with original metadata
         let maker = maker_apple_from_headroom(derivedHeadroom)
         guard let chosen = maker.default else {
             throw ProcessingError.makerAppleMetadataFailed
         }
         
-        var props = sdrBase.properties
+        var props = originalMetadata
         var maker_apple = props[kCGImagePropertyMakerAppleDictionary as String] as? [String: Any] ?? [:]
         maker_apple["33"] = chosen.maker33
         maker_apple["48"] = chosen.maker48
         props[kCGImagePropertyMakerAppleDictionary as String] = maker_apple
+        
+        // Currently the app is not allowing for resizing -- should this change in the future, un-comment this!
+//        let extent = sdrBase.extent
+//        props[kCGImagePropertyPixelWidth as String] = Int(extent.width)
+//        props[kCGImagePropertyPixelHeight as String] = Int(extent.height)
+        
         let sdr_with_props = sdrBase.settingProperties(props)
         
         // Read quality from UserDefaults (set in Preferences)
@@ -225,7 +253,7 @@ class HDRProcessor {
         // Final export
         let export_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
-            CIImageRepresentationOption.hdrImage: hdr,
+            CIImageRepresentationOption.hdrGainMapImage: gain_map,
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
@@ -243,6 +271,50 @@ class HDRProcessor {
                                                      colorSpace: p3_cs,
                                                      options: export_options)
         }
+    }
+    
+    // MARK: - Metadata Extraction
+
+    /// Extracts EXIF/IPTC/TIFF metadata from cache (zero disk I/O)
+    private func extractMetadata(from url: URL) -> [String: Any] {
+        let key = url as NSURL
+        
+        // 1) Prova RawPixelData cache (ha i metadata)
+        if let rawData = Self.rawDataCache.object(forKey: key) {
+            return filterMetadataForPreservation(rawData.properties)
+        }
+        
+        // 2) Fallback: leggi da disco (solo se non in cache - raro)
+        guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any] else {
+            return [:]
+        }
+        
+        return filterMetadataForPreservation(properties)
+    }
+    
+    /// Filters only metadata to preserve
+    private func filterMetadataForPreservation(_ properties: [String: Any]) -> [String: Any] {
+        var metadata: [String: Any] = [:]
+        
+        // Lista di chiavi da preservare (aggiorna dopo aver usato lo script)
+        let keysToPreserve: [String] = [
+            kCGImagePropertyDPIHeight as String,
+            kCGImagePropertyDPIWidth as String,
+            kCGImagePropertyExifAuxDictionary as String,
+            kCGImagePropertyExifDictionary as String,
+            kCGImagePropertyGPSDictionary as String,
+            kCGImagePropertyIPTCDictionary as String,
+            kCGImagePropertyTIFFDictionary as String
+        ]
+        
+        for key in keysToPreserve {
+            if let value = properties[key] {
+                metadata[key] = value
+            }
+        }
+        
+        return metadata
     }
     
     // MARK: - Percentile Headroom (Real-time UI)
@@ -1086,6 +1158,7 @@ class HDRProcessor {
         let bitsPerComponent = cgImage.bitsPerComponent
         let bitsPerPixel = cgImage.bitsPerPixel
         let componentsPerPixel = bitsPerPixel / bitsPerComponent
+        let properties = (CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any]) ?? [:]
         
         // print("📂 [loadHDR] Image loaded:")
         // print("   File: \(url.lastPathComponent)")
@@ -1127,7 +1200,8 @@ class HDRProcessor {
             componentsPerPixel: componentsPerPixel,
             isBigEndian: isBigEndian,
             bytes: bytes,
-            cgImage: cgImage
+            cgImage: cgImage,
+            properties: properties
         )
         
         let byteCost = dataLength / (1024 * 1024)  // MB
