@@ -8,10 +8,11 @@ class RawPixelData {
     let componentsPerPixel: Int
     let isBigEndian: Bool
     let bytes: [UInt8]
-    let cgImage: CGImage  // CGImage originale per ricreare CIImage
-    //        let properties: [String: Any]
+    let cgImage: CGImage
+    let properties: [String: Any]
     
-    init(width: Int, height: Int, bitsPerComponent: Int, componentsPerPixel: Int, isBigEndian: Bool, bytes: [UInt8], cgImage: CGImage) {
+    init(width: Int, height: Int, bitsPerComponent: Int, componentsPerPixel: Int,
+         isBigEndian: Bool, bytes: [UInt8], cgImage: CGImage, properties: [String: Any]) {
         self.width = width
         self.height = height
         self.bitsPerComponent = bitsPerComponent
@@ -19,5 +20,6 @@ class RawPixelData {
         self.isBigEndian = isBigEndian
         self.bytes = bytes
         self.cgImage = cgImage
+        self.properties = properties
     }
 }
