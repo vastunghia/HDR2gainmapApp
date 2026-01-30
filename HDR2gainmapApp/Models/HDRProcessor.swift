@@ -207,7 +207,7 @@ class HDRProcessor {
         
         // Extract metadata from the original HDR PNG file
         let originalMetadata = extractMetadata(from: image.url)
-        print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
+//        print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
         
         // Generate gain map (temp HEIC)
         let tmp_options: [CIImageRepresentationOption: Any] = [
