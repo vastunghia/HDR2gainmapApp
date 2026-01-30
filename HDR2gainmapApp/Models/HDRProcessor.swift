@@ -257,20 +257,20 @@ class HDRProcessor {
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
-        let method = resolveExportMethodPreference()
-        switch method {
-        case .heif:
-            try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
-                                                   to: outputURL,
-                                                   format: .RGB10,
-                                                   colorSpace: p3_cs,
-                                                   options: export_options)
-        case .heif10:
-            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
-                                                     to: outputURL,
-                                                     colorSpace: p3_cs,
-                                                     options: export_options)
-        }
+//        let method = resolveExportMethodPreference()
+//        switch method {
+//        case .heif:
+//            try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
+//                                                   to: outputURL,
+//                                                   format: .RGB10,
+//                                                   colorSpace: p3_cs,
+//                                                   options: export_options)
+//        case .heif10:
+        try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
+                                                 to: outputURL,
+                                                 colorSpace: p3_cs,
+                                                 options: export_options)
+//        }
     }
     
     // MARK: - Metadata Extraction
