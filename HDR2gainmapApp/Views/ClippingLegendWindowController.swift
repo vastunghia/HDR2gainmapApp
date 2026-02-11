@@ -4,7 +4,7 @@ import AppKit
 /// Native NSWindow controller for the clipping legend that stays always on top
 class ClippingLegendWindowController: NSWindowController {
     
-    private var viewModel: MainViewModel?
+    // private var viewModel: MainViewModel?
     
     convenience init(viewModel: MainViewModel) {
         // Create the window
@@ -40,7 +40,7 @@ class ClippingLegendWindowController: NSWindowController {
         }
         
         self.init(window: window)
-        self.viewModel = viewModel
+        // self.viewModel = viewModel
         
         // Set the SwiftUI view as content
         let contentView = ClippingLegendContentView(viewModel: viewModel)
@@ -399,45 +399,5 @@ struct RGBDiagramView: View {
             )
         }
         .frame(minWidth: 200, minHeight: 200)
-    }
-}
-
-// Keep ClippingStatRow for backwards compatibility if needed elsewhere
-struct ClippingStatRow: View {
-    let label: String
-    let color: Color
-    let count: Int
-    let total: Int
-    var isBlackOverlay: Bool = false
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(color)
-                .frame(width: 24, height: 24)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .strokeBorder(Color.primary.opacity(0.2), lineWidth: 1)
-                )
-            
-            Text(label)
-                .font(.subheadline)
-            
-            Spacer()
-            
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("\(count.formatted())")
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                    .monospacedDigit()
-                
-                if count > 0 {
-                    Text(formatPercentTwoSig(Double(count) / Double(total) * 100))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-            }
-        }
     }
 }

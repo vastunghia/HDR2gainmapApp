@@ -218,7 +218,7 @@ struct PeakMaxControls: View {
     let isDisabled: Bool
     
     private let tonemapRatioRange: ClosedRange<Float> = 0.0...1.0
-
+    
     /// The Peak Max slider is intentionally reversed: moving the thumb to the right decreases the
     /// underlying `settings.tonemapRatio` that feeds the tone-mapping curve.
     private var tonemapRatioSliderBinding: Binding<Float> {
@@ -232,7 +232,7 @@ struct PeakMaxControls: View {
             }
         )
     }
-
+    
     /// Display the UI-facing value so the number grows as the thumb moves to the right.
     private var displayedTonemapRatio: Float {
         tonemapRatioRange.lowerBound + tonemapRatioRange.upperBound - settings.tonemapRatio
@@ -252,7 +252,7 @@ struct PeakMaxControls: View {
             
             Slider(value: tonemapRatioSliderBinding, in: tonemapRatioRange)
                 .disabled(isDisabled)
-                            
+            
             Text("Controls the softening curve applied to peak brightness")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -498,9 +498,88 @@ struct TargetHeadroomControls: View {
 
 struct ExportSection: View {
     let viewModel: MainViewModel
+    @State private var showAppliedFeedback = false
+    @State private var appliedCount = 0
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // FILENAME SUFFIX
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Filename Suffix (optional)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                
+                if let selectedImage = viewModel.selectedImage {
+                    HStack(spacing: 8) {
+                        TextField("e.g., \"processed\" or \"_v2\"", text: Binding(
+                            get: { selectedImage.settings.filenameSuffix },
+                            set: { selectedImage.settings.filenameSuffix = $0 }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.subheadline)
+                        
+                        Button(action: {
+                            applySuffixToAllImages(selectedImage.settings.filenameSuffix)
+                            appliedCount = viewModel.images.count
+                            
+                            // Mostra feedback
+                            withAnimation {
+                                showAppliedFeedback = true
+                            }
+                            
+                            // Nascondi dopo 2.5 secondi
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                                withAnimation {
+                                    showAppliedFeedback = false
+                                }
+                            }
+                        }) {
+                            Text("Apply to all")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .disabled(viewModel.images.count <= 1)
+                        .help("Apply this suffix to all \(viewModel.images.count) loaded images")
+                    }
+                    
+                    // VISUAL FEEDBACK
+                    if showAppliedFeedback {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .font(.caption)
+                            Text("Applied to all \(appliedCount) images")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(Color.green.opacity(0.1))
+                        )
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
+                } else {
+                    HStack(spacing: 8) {
+                        TextField("e.g., \"processed\" or \"_v2\"", text: .constant(""))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.subheadline)
+                            .disabled(true)
+                        
+                        Button("Apply to all") {}
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .disabled(true)
+                    }
+                }
+            }
+            
+            Divider()
+                .padding(.vertical, 4)
+            
+            // Bottoni export (invariati)
             Button(action: {
                 viewModel.exportCurrentImage()
             }) {
@@ -524,8 +603,29 @@ struct ExportSection: View {
             Text("Exports HEIC with embedded gain map and Maker Apple metadata")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let selectedImage = viewModel.selectedImage {
+                let filename = FilenameHelper.generateFilename(
+                    baseName: selectedImage.fileName,
+                    suffix: selectedImage.settings.filenameSuffix,
+                    extension: "heic"
+                )
+                Text("Exported filename will be \(filename)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Exported filename will be <n/a>)")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .disabled(true)
+            }
         }
         .padding(.horizontal)
+    }
+    
+    private func applySuffixToAllImages(_ suffix: String) {
+        for image in viewModel.images {
+            image.settings.filenameSuffix = suffix
+        }
     }
 }
 

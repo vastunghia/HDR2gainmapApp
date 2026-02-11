@@ -25,11 +25,6 @@ func tonemap_sdr(from hdr: CIImage,
                        ])
 }
 
-/// Legacy helper kept for compatibility (target headroom = 1.0).
-func tonemap_sdr(from hdr: CIImage, headroom_ratio: Float) -> CIImage? {
-    tonemap_sdr(from: hdr, sourceHeadroom: headroom_ratio, targetHeadroom: 1.0)
-}
-
 // MARK: - Luminance Utilities
 
 /// Extracts linear luminance using Rec.709 coefficients (0.2126, 0.7152, 0.0722).

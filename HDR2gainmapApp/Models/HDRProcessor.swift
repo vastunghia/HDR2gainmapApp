@@ -60,6 +60,17 @@ class HDRProcessor {
     private lazy var encode_ctx = CIContext()
     
     private init() {
+        let totalRAM = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
+        let maxCacheSizeGB = min(max(Int(Double(totalRAM) * 0.12), 2), 8)  // Min 2GB, Max 8GB
+        
+        Self.rawDataCache.totalCostLimit = maxCacheSizeGB * 1024
+        hdrCache.totalCostLimit = maxCacheSizeGB * 250
+        
+        // Log for debug
+        // print("💾 System has \(totalRAM) GB RAM - cache limit set to \(maxCacheSizeGB) GB")
+        
+        Self.peakLuminanceCache.countLimit = 100
+        Self.percentileCDFCache.countLimit = 100
         previewBaseCache.countLimit = 32
         previewOverlayCache.countLimit = 32
         previewCountsCache.countLimit = 64
@@ -207,7 +218,7 @@ class HDRProcessor {
         
         // Extract metadata from the original HDR PNG file
         let originalMetadata = extractMetadata(from: image.url)
-//        print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
+        // print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
         
         // Generate gain map (temp HEIC)
         let tmp_options: [CIImageRepresentationOption: Any] = [
@@ -239,6 +250,18 @@ class HDRProcessor {
         maker_apple["48"] = chosen.maker48
         props[kCGImagePropertyMakerAppleDictionary as String] = maker_apple
         
+        // Append to Software metadata
+        var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>"
+        if let originalSoftware = tiff["Software"] as? String, !originalSoftware.isEmpty {
+            // Append to existing value
+            tiff["Software"] = "\(originalSoftware) + HDR2gainmap App v\(appVersion)"
+        } else {
+            // No existing value
+            tiff["Software"] = "HDR2gainmapApp v\(appVersion)"
+        }
+        props[kCGImagePropertyTIFFDictionary as String] = tiff
+
         // Currently the app is not allowing for resizing -- should this change in the future, un-comment this!
 //        let extent = sdrBase.extent
 //        props[kCGImagePropertyPixelWidth as String] = Int(extent.width)
@@ -526,49 +549,19 @@ class HDRProcessor {
         return max(1.0, headroom)
     }
     
-    
-    /// Computes headroom from a percentile on raw pixel data.
-    ///
-    /// This is primarily used by preview/export. The histogram UI should call `cachedPercentileHeadroom`
-    /// so it stays responsive while the user drags the Percentile slider.
-    //    private func calculatePercentileHeadroom(url: URL, percentile: Float) -> Float? {
-    //        if let cached = cachedPercentileHeadroom(url: url, percentile: percentile) {
-    //            return cached
-    //        }
-    //
-    //        do {
-    //            let rawData = try getRawPixelData(url: url)
-    //            let peakHeadroom = getHeadroomForImage(url: url)
-    //            let peakNits = max(0.001, peakHeadroom * Constants.referenceHDRwhiteNit)
-    //
-    //            let box = Self.buildPercentileCDF(
-    //                bytes: rawData.bytes,
-    //                width: rawData.width,
-    //                height: rawData.height,
-    //                componentsPerPixel: rawData.componentsPerPixel,
-    //                isBigEndian: rawData.isBigEndian,
-    //                peakNits: peakNits,
-    //                bins: 2048
-    //            )
-    //
-    //            Self.percentileCDFCache.setObject(box, forKey: url as NSURL)
-    //            return Self.headroomFromCDF(box, percentile: percentile)
-    //        } catch {
-    //            return nil
-    //        }
-    //    }
-    
     // MARK: - Headroom
-    
-    
-    //            print("🔎 Percentile=\(pShown) → headroom=\(headroom)")
     
     /// Computes raw headroom (no cache; prefer getHeadroomForImage() instead).
     /// Use Metal for a 10–100× speedup (when available).
     @MainActor
     func computeMeasuredHeadroomRaw(url: URL) throws -> Float {
-        // Fetch raw pixel data from cache.
+        
+        // print("🔍 [computeMeasuredHeadroomRaw] Called for: \(url.lastPathComponent)")
+        
+        // Fetch raw pixel data from cache
         let rawData = try getRawPixelData(url: url)
+        
+        // print("    RawData obtained: \(rawData.width)×\(rawData.height), \(rawData.bytes.count) bytes")
         
         // Try Metal first.
         let peakNits: Float
@@ -609,30 +602,29 @@ class HDRProcessor {
         
         // Cache hit?
         if let cached = Self.peakLuminanceCache.object(forKey: key) {
-            // print("   ⚡ Peak luminance cache HIT (0ms): \(cached.floatValue)")
+//            print("📦 [Headroom] Cache HIT: \(url.lastPathComponent) = \(cached.floatValue)")
             return cached.floatValue
         }
+        
+        // print("⚠️  [Headroom] Cache MISS: \(url.lastPathComponent)")
         
         // print("   ❌ Peak luminance cache MISS, calculating...")
         
         do {
             let headroom = try computeMeasuredHeadroomRaw(url: url)
             
-            // Validation
-            // print("   📊 Computed headroom: \(headroom)")
-            
             if headroom <= 1.0 {
-                // print("   ⚠️ WARNING: Headroom is 1.0 or less! This might indicate:")
-                // print("      - Image is SDR (not HDR)")
-                // print("      - Peak luminance calculation failed")
-                // print("      - Corrupted image data")
+                // print("❌ [Headroom] WARNING: Computed headroom = \(headroom) ≤ 1.0!")
+            } else {
+                // print("✅ [Headroom] Computed headroom = \(headroom)")
             }
             
             Self.peakLuminanceCache.setObject(NSNumber(value: headroom), forKey: key)
+            // print("    Cached headroom for: \(url.lastPathComponent)")
             
             return headroom
         } catch {
-            // print("   ❌ Failed to compute headroom: \(error)")
+            // print("❌ [Headroom] Computation FAILED: \(error)")
             return 1.0
         }
     }
@@ -722,8 +714,6 @@ class HDRProcessor {
         
         return maxLuminanceNits.isFinite ? maxLuminanceNits : Constants.referenceHDRwhiteNit
     }
-    
-    
     
     // MARK: - Overlay + count
     
@@ -1105,13 +1095,7 @@ class HDRProcessor {
         
         return histogram
     }
-    
-    // MARK: - Histogram Calculation
-    
-    // Histogram cache (key = URL + range fingerprint).
-    
-    
-    
+
     // MARK: - Raw Data Structures
     
     /// Separate cache for raw pixel data (used for histograms).
@@ -1135,17 +1119,33 @@ class HDRProcessor {
         
         // CIImage cache hit?
         if let cached = hdrCache.object(forKey: key) {
-            return cached
+            // print("📦 [loadHDR] CIImage cache HIT: \(url.lastPathComponent)")
+            
+            // Check for RawPixelData to be still cached
+            if Self.rawDataCache.object(forKey: key) == nil {
+                // print("⚠️  [loadHDR] RawPixelData was evicted! Recreating...")
+                // RawPixelData was evicted - recreate it
+                // Unfortunately we need to read from disk again
+                // (we cannot rebuild it from CIImage easily)
+                // So DO NOT return here, keep reading from disk
+            } else {
+                // Ok, both caches own the object
+                return cached
+            }
         }
         
-        // If we don't have a cached CIImage, check whether raw bytes are cached.
+        // print("⚠️  [loadHDR] CIImage cache MISS: \(url.lastPathComponent)")
+        
+        // Check raw data cache
         if let rawData = Self.rawDataCache.object(forKey: key) {
-            // Raw bytes are cached: rebuild the CIImage without re-reading from disk.
+            // print("📦 [loadHDR] RawData cache HIT: \(url.lastPathComponent)")
             return try createCIImageFromRawData(rawData, key: key)
         }
         
-        // No cache: read from disk (only once).
-        // print("📂 Loading from disk: \(url.lastPathComponent)")
+        // print("⚠️  [loadHDR] RawData cache MISS: \(url.lastPathComponent)")
+        
+        // No cache: read from disk (ONLY ONCE per session ideally, but cache eviction forces re-reads)
+        // print("📂 [loadHDR] Reading from DISK: \(url.lastPathComponent)")
         
         // 1) Load raw bytes and the original CGImage.
         guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -1205,7 +1205,7 @@ class HDRProcessor {
         )
         
         let byteCost = dataLength / (1024 * 1024)  // MB
-        Self.rawDataCache.totalCostLimit = 1024  // Max 1GB
+        // Self.rawDataCache.totalCostLimit = 1024  // Max 1GB
         Self.rawDataCache.setObject(rawData, forKey: key, cost: byteCost)
         
         // 3) Create and cache a CIImage from raw data (no additional I/O).
@@ -1237,7 +1237,7 @@ class HDRProcessor {
         
         // Cache CIImage
         let mp = Int(fileCI.extent.width * fileCI.extent.height / 1_000_000)
-        hdrCache.totalCostLimit = 800
+        // hdrCache.totalCostLimit = 800
         hdrCache.setObject(residentCI, forKey: key, cost: mp)
         
         return residentCI
@@ -1249,18 +1249,23 @@ class HDRProcessor {
     private func getRawPixelData(url: URL) throws -> RawPixelData {
         let key = url as NSURL
         
-        // It should always be cached after loadHDR, but handle edge cases.
+        // Cache hit?
         if let cached = Self.rawDataCache.object(forKey: key) {
+            // print("📦 [getRawPixelData] Cache HIT: \(url.lastPathComponent)")
             return cached
         }
         
-        // Fallback: load now (triggers loadHDR and populates the cache).
+        // print("⚠️  [getRawPixelData] Cache MISS, calling loadHDR...")
+        
+        // Fallback: load now
         _ = try loadHDR(url: url)
         
         guard let cached = Self.rawDataCache.object(forKey: key) else {
+            // print("❌ [getRawPixelData] STILL not in cache after loadHDR!")
             throw ProcessingError.cannotReadHDR
         }
         
+        // print("✅ [getRawPixelData] Now in cache after loadHDR")
         return cached
     }
     

@@ -401,8 +401,8 @@ struct HistogramCanvasCompact: View {
                     context: &context,
                     size: size,
                     nits: sourceNits,
-                    color: .purple,  // Magenta/Purple
-                    label: "IN"
+                    color: .purple  // Magenta/Purple
+//                    label: "IN"
                 )
             }
             
@@ -413,8 +413,8 @@ struct HistogramCanvasCompact: View {
                     context: &context,
                     size: size,
                     nits: targetNits,
-                    color: .purple,  // Magenta/Purple
-                    label: "OUT"
+                    color: .purple  // Magenta/Purple
+//                    label: "OUT"
                 )
             }
         }
@@ -425,8 +425,8 @@ struct HistogramCanvasCompact: View {
         context: inout GraphicsContext,
         size: CGSize,
         nits: Float,
-        color: Color,
-        label: String
+        color: Color
+//        label: String
     ) {
         let xPos = nitsToX(nits) * size.width
         let triangleSize: CGFloat = 8

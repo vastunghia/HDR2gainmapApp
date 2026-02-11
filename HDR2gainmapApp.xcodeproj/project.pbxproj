@@ -60,6 +60,7 @@
 				Models/ProcessingSettings.swift,
 				Models/RawPixelData.swift,
 				Utilities/ExportMethodPreference.swift,
+				Utilities/FilenameHelper.swift,
 				Utilities/HDRProcessorUtilities.swift,
 				Utilities/HistogramCalculator.swift,
 				Utilities/HistogramShaders.metal,
@@ -543,7 +544,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.2;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = it.vastunghia.HDR2gainmapApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -591,7 +592,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.2;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = it.vastunghia.HDR2gainmapApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

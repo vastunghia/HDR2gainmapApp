@@ -59,5 +59,10 @@ class ProcessingSettings {
     var showClippedOverlay: Bool = true
     var overlayColor: String = "magenta"
     
+    // MARK: - Export
+    
+    /// Optional suffix to append to exported filenames
+    var filenameSuffix: String = ""
+    
     init() {}
 }

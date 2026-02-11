@@ -200,7 +200,6 @@ class MetalHistogramCalculator {
         
         return HistogramCalculator.HistogramResult(
             xCenters: xCenters,
-            centersNit: centersNit,
             redCounts: redSmooth,
             greenCounts: greenSmooth,
             blueCounts: blueSmooth,
@@ -342,7 +341,6 @@ class MetalHistogramCalculator {
         
         return HistogramCalculator.HistogramResult(
             xCenters: xCenters,
-            centersNit: centersNit,
             redCounts: redSmooth,
             greenCounts: greenSmooth,
             blueCounts: blueSmooth,

@@ -167,7 +167,6 @@ class MainViewModel {
         // Note: the thumbnail list view may toggle the "new image" loading spinner and clear histograms immediately.
         // Here we switch selection, reset per-image state, generate the preview first, then compute histograms.
         
-        
         // Switch selection (triggers a headroom refresh via `didSet`).
         self.selectedImage = image
         
@@ -184,6 +183,10 @@ class MainViewModel {
         
         // Generate histograms afterwards (keeps the selection UI feeling snappy).
         await generateHistograms()
+        
+        // Debug: Print cache stats
+        // processor.printCacheStats()
+
     }
     
     func refreshMeasuredHeadroom() {
@@ -452,7 +455,17 @@ class MainViewModel {
         guard let image = selectedImage else { return }
         
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = image.fileName + ".heic"
+        
+        // Generate filename with suffix
+        let baseName = image.fileName
+        let suffix = image.settings.filenameSuffix
+        let defaultName = FilenameHelper.generateFilename(
+            baseName: baseName,
+            suffix: suffix,
+            extension: "heic"
+        )
+        
+        panel.nameFieldStringValue = defaultName
         panel.allowedContentTypes = [UTType.heic]
         panel.message = "Choose export location"
         
@@ -516,15 +529,23 @@ class MainViewModel {
             
             // EXPORT
             if isValid {
-                let outputURL = outputFolder
-                    .appendingPathComponent(image.fileName)
-                    .appendingPathExtension("heic")
+                // Generate filename with suffix
+                let baseName = image.fileName
+                let suffix = image.settings.filenameSuffix
+                let filename = FilenameHelper.generateFilename(
+                    baseName: baseName,
+                    suffix: suffix,
+                    extension: "heic"
+                )
+                
+                let outputURL = outputFolder.appendingPathComponent(filename)
+                
                 try? FileManager.default.removeItem(at: outputURL)
                 do {
                     try await processor.exportImage(image, to: outputURL)
-                    succeeded.append(image.fileName)
+                    succeeded.append(filename)  // ✅ Use final name
                 } catch {
-                    failed.append((image.fileName, error.localizedDescription))
+                    failed.append((filename, error.localizedDescription))
                 }
             }
             

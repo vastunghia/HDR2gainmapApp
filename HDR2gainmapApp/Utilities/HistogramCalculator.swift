@@ -135,15 +135,14 @@ class HistogramCalculator {
     /// Histogram output (reference type for NSCache compatibility).
     class HistogramResult {
         let xCenters: [Float]        // X positions [0..1] of bin centers
-        let centersNit: [Float]      // Nit values corresponding to bin centers
+        // let centersNit: [Float]      // Nit values corresponding to bin centers
         let redCounts: [Float]       // Smoothed counts for R
         let greenCounts: [Float]     // Smoothed counts for G
         let blueCounts: [Float]      // Smoothed counts for B
         let lumaCounts: [Float]      // Smoothed counts for luma (Y)
         
-        init(xCenters: [Float], centersNit: [Float], redCounts: [Float], greenCounts: [Float], blueCounts: [Float], lumaCounts: [Float]) {
+        init(xCenters: [Float], redCounts: [Float], greenCounts: [Float], blueCounts: [Float], lumaCounts: [Float]) {
             self.xCenters = xCenters
-            self.centersNit = centersNit
             self.redCounts = redCounts
             self.greenCounts = greenCounts
             self.blueCounts = blueCounts
@@ -265,7 +264,6 @@ class HistogramCalculator {
         
         return HistogramResult(
             xCenters: xCenters,
-            centersNit: centersNit,
             redCounts: redSmooth,
             greenCounts: greenSmooth,
             blueCounts: blueSmooth,
@@ -428,7 +426,6 @@ class HistogramCalculator {
         
         return HistogramResult(
             xCenters: xCenters,
-            centersNit: centersNit,
             redCounts: redSmooth,
             greenCounts: greenSmooth,
             blueCounts: blueSmooth,
