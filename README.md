@@ -30,7 +30,8 @@ The resulting HEIC files work seamlessly (i.e. **the SDR or the HDR version of t
 - **Real-time preview** with optional clipped pixel overlay (multi-color visualization highlighting which channels are being clipped)
 - **Live HDR and SDR histograms** with split-axis layout (sRGB curve for SDR, logarithmic for HDR)
 - **Detailed clipping statistics** with interactive legend window
-- **Batch export** with progress tracking
+- **Batch export** with progress tracking and possibility to append a string of your choice to all file names
+- **Metadata preserved** in output files
 - **Metal-accelerated** histogram and peak luminance calculation
 
 ## Input Format Requirements
