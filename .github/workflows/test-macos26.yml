@@ -22,6 +22,17 @@ jobs:
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
+
+    - name: Ensure MetalToolchain is installed (Xcode 26+)
+      run: |
+        set -euo pipefail
+        echo "Checking Metal tool availability..."
+        if xcrun metal -v 2>&1 | grep -q "missing Metal Toolchain"; then
+          echo "Metal toolchain missing -> downloading MetalToolchain..."
+          xcodebuild -downloadComponent MetalToolchain || sudo xcodebuild -downloadComponent MetalToolchain
+        else
+          echo "Metal toolchain OK"
+        fi
     
     - name: Display system information
       run: |
@@ -115,6 +126,17 @@ jobs:
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
+
+    - name: Ensure MetalToolchain is installed (Xcode 26+)
+      run: |
+        set -euo pipefail
+        echo "Checking Metal tool availability..."
+        if xcrun metal -v 2>&1 | grep -q "missing Metal Toolchain"; then
+          echo "Metal toolchain missing -> downloading MetalToolchain..."
+          xcodebuild -downloadComponent MetalToolchain || sudo xcodebuild -downloadComponent MetalToolchain
+        else
+          echo "Metal toolchain OK"
+        fi
     
     - name: Display system information
       run: |
