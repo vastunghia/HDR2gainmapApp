@@ -23,16 +23,25 @@ jobs:
       with:
         xcode-version: latest-stable
 
-    - name: Ensure MetalToolchain is installed (Xcode 26+)
+    - name: Install & verify MetalToolchain (Xcode 26+)
       run: |
         set -euo pipefail
-        echo "Checking Metal tool availability..."
-        if xcrun metal -v 2>&1 | grep -q "missing Metal Toolchain"; then
-          echo "Metal toolchain missing -> downloading MetalToolchain..."
-          xcodebuild -downloadComponent MetalToolchain || sudo xcodebuild -downloadComponent MetalToolchain
-        else
-          echo "Metal toolchain OK"
-        fi
+
+        echo "Xcode:"
+        xcodebuild -version
+        echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+        xcrun --find metal || true
+
+        echo "Downloading MetalToolchain..."
+        sudo xcodebuild -downloadComponent MetalToolchain
+
+        echo "Verifying metal works (compile a tiny shader)..."
+        cat > /tmp/ci_test.metal <<'EOF'
+        #include <metal_stdlib>
+        using namespace metal;
+        kernel void k(device float* a [[buffer(0)]], uint id [[thread_position_in_grid]]) { a[id]=a[id]; }
+        EOF
+        xcrun metal -c /tmp/ci_test.metal -o /tmp/ci_test.air
     
     - name: Display system information
       run: |
@@ -127,17 +136,26 @@ jobs:
       with:
         xcode-version: latest-stable
 
-    - name: Ensure MetalToolchain is installed (Xcode 26+)
+    - name: Install & verify MetalToolchain (Xcode 26+)
       run: |
         set -euo pipefail
-        echo "Checking Metal tool availability..."
-        if xcrun metal -v 2>&1 | grep -q "missing Metal Toolchain"; then
-          echo "Metal toolchain missing -> downloading MetalToolchain..."
-          xcodebuild -downloadComponent MetalToolchain || sudo xcodebuild -downloadComponent MetalToolchain
-        else
-          echo "Metal toolchain OK"
-        fi
-    
+
+        echo "Xcode:"
+        xcodebuild -version
+        echo "DEVELOPER_DIR=$DEVELOPER_DIR"
+        xcrun --find metal || true
+
+        echo "Downloading MetalToolchain..."
+        sudo xcodebuild -downloadComponent MetalToolchain
+
+        echo "Verifying metal works (compile a tiny shader)..."
+        cat > /tmp/ci_test.metal <<'EOF'
+        #include <metal_stdlib>
+        using namespace metal;
+        kernel void k(device float* a [[buffer(0)]], uint id [[thread_position_in_grid]]) { a[id]=a[id]; }
+        EOF
+        xcrun metal -c /tmp/ci_test.metal -o /tmp/ci_test.air
+
     - name: Display system information
       run: |
         echo "=== System Information ==="
