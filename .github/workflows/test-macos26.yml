@@ -21,27 +21,7 @@ jobs:
     - name: Setup Xcode
       uses: maxim-lobanov/setup-xcode@v1
       with:
-        xcode-version: latest-stable
-
-    - name: Install & verify MetalToolchain (Xcode 26+)
-      run: |
-        set -euo pipefail
-
-        echo "Xcode:"
-        xcodebuild -version
-        echo "DEVELOPER_DIR=$DEVELOPER_DIR"
-        xcrun --find metal || true
-
-        echo "Downloading MetalToolchain..."
-        sudo xcodebuild -downloadComponent MetalToolchain
-
-        echo "Verifying metal works (compile a tiny shader)..."
-        cat > /tmp/ci_test.metal <<'EOF'
-        #include <metal_stdlib>
-        using namespace metal;
-        kernel void k(device float* a [[buffer(0)]], uint id [[thread_position_in_grid]]) { a[id]=a[id]; }
-        EOF
-        xcrun metal -c /tmp/ci_test.metal -o /tmp/ci_test.air
+        xcode-version: "26.2" # latest-stable
     
     - name: Display system information
       run: |
@@ -134,27 +114,7 @@ jobs:
     - name: Setup Xcode
       uses: maxim-lobanov/setup-xcode@v1
       with:
-        xcode-version: latest-stable
-
-    - name: Install & verify MetalToolchain (Xcode 26+)
-      run: |
-        set -euo pipefail
-
-        echo "Xcode:"
-        xcodebuild -version
-        echo "DEVELOPER_DIR=$DEVELOPER_DIR"
-        xcrun --find metal || true
-
-        echo "Downloading MetalToolchain..."
-        sudo xcodebuild -downloadComponent MetalToolchain
-
-        echo "Verifying metal works (compile a tiny shader)..."
-        cat > /tmp/ci_test.metal <<'EOF'
-        #include <metal_stdlib>
-        using namespace metal;
-        kernel void k(device float* a [[buffer(0)]], uint id [[thread_position_in_grid]]) { a[id]=a[id]; }
-        EOF
-        xcrun metal -c /tmp/ci_test.metal -o /tmp/ci_test.air
+        xcode-version: "26.2" # latest-stable
 
     - name: Display system information
       run: |
