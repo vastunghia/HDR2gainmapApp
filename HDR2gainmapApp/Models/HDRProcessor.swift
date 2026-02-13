@@ -289,16 +289,16 @@ class HDRProcessor {
                                                    colorSpace: p3_cs,
                                                    options: export_options)
         case .heif10:
-    try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
-                                             to: outputURL,
-                                             colorSpace: p3_cs,
-                                             options: export_options)
+            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
+                                                     to: outputURL,
+                                                     colorSpace: p3_cs,
+                                                     options: export_options)
         }
         
-        // ✅ NUOVO: su macOS 26+, Core Image scrive la gain map con il nuovo
-        // schema HDRToneMap (ISO 21496-1) invece del vecchio HDRGainMap Apple.
-        // Adobe Gain Map Demo App (e altri tool) si aspettano ancora i tag
-        // HDRGainMap classici → li iniettamo in post come patch al file.
+        // On macOS 26+, Core Image writes the gain map with the new
+        // HDRToneMap scheme (ISO 21496-1) instead of the old Apple scheme HDRGainMap.
+        // Adobe Gain Map Demo App is still expecting for classic HDRGainMap tags
+        // so we inject them ex post as a patch on the exported file
         try patchGainMapMetadataIfNeeded(at: outputURL, derivedHeadroom: derivedHeadroom)
 
     }
@@ -306,48 +306,42 @@ class HDRProcessor {
     
     // MARK: - Gain Map Metadata Patch (macOS 26+)
 
-    /// Entry point del patch. Viene eseguito solo su macOS 26+, dove Core Image
-    /// scrive la gain map usando il namespace HDRToneMap (ISO 21496-1) invece
-    /// del namespace HDRGainMap Apple classico atteso da Adobe e altri tool.
-    ///
-    /// Il metodo:
-    ///  1. Legge l'auxiliary data HDRGainMap già scritta da Core Image
-    ///  2. Determina l'headroom (da HDRToneMap:AlternateHeadroom o da MakerApple)
-    ///  3. Costruisce programmaticamente un nuovo CGImageMetadata con i tag
-    ///     HDRGainMap classici (senza round-trip XMP, che fallirebbe sui tag
-    ///     strutturati annidati come HDRToneMap:ChannelMetadata)
-    ///  4. Riscrive il file HEIC sostituendo solo i metadati dell'auxiliary data
+    ///  1. Read auxiliary data HDRGainMap already written by Core Image
+    ///  2. Determine headroom (from HDRToneMap:AlternateHeadroom or from MakerApple)
+    ///  3. Build a new CGImageMetadata with classic HDRGainMap tags (without round-trip XMP,
+    ///      which would fail on structural tags nestes such as HDRToneMap:ChannelMetadata)
+    ///  4. Overwrite HEIC file replacing only auxiliary data metadata
     ///
     /// - Parameters:
-    ///   - url: URL del file HEIC appena scritto da Core Image
-    ///   - derivedHeadroom: headroom calcolato dal pipeline di export (usato come
-    ///     fallback se non disponibile nell'auxiliary data)
+    ///   - url: URL of the HEIC file just written by Core Image
+    ///   - derivedHeadroom: headroom calculated by the export pipeline (used as fallback if not available
+    ///     in the auxiliary data)
     private func patchGainMapMetadataIfNeeded(at url: URL, derivedHeadroom: Float) throws {
 
-        // Esegui solo su macOS 26+
+        // Only on macOS 26+
         guard #available(macOS 26.0, *) else { return }
 
-        // ── 1. Apri il file appena scritto ────────────────────────────────────
+        // ── 1. Open file just written----- ────────────────────────────────────
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return }
 
-        // ── 2. Leggi l'auxiliary data ─────────────────────────────────────────
+        // ── 2. Read aux data          ─────────────────────────────────────────
         guard let rawAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
                     src, 0, kCGImageAuxiliaryDataTypeHDRGainMap),
               let auxDict = rawAux as? [String: Any] else {
-            // Nessuna gain map trovata: niente da patchare
+            // No gain map found: nothing to patch
             return
         }
 
         let metaKey = kCGImageAuxiliaryDataInfoMetadata as String
 
-        // ── 3. Determina l'headroom ───────────────────────────────────────────
+        // ── 3. Determine headroom ---───────────────────────────────────────────
         //
-        // Priorità:
-        //  a) HDRToneMap:AlternateHeadroom nell'auxiliary data — il più preciso
-        //     perché scritto direttamente dall'encoder macOS 26
-        //  b) derivedHeadroom passato dal pipeline di export — già calcolato,
-        //     evita di rileggere MakerApple dal file
-        //  c) Fallback: legge MakerApple dal file (percorso difensivo)
+        // Priority:
+        //  a) HDRToneMap:AlternateHeadroom in auxiliary data — the most reliable
+        //     as written directly by macOS 26 encoder
+        //  b) derivedHeadroom passed from export pipeline — already computed,
+        //     avoids reading back MakerApple from file
+        //  c) Fallback: read MakerApple from file
         //
         let headroom: Float
 
@@ -363,14 +357,14 @@ class HDRProcessor {
             headroom = max(1.0, derivedHeadroom)
         }
 
-        // ── 4. Costruisce i nuovi metadati HDRGainMap ─────────────────────────
+        // ── 4. Build new HDRGainMap metadata ---------─────────────────────────
         guard let newMeta = buildHDRGainMapMetadata(headroom: headroom) else { return }
 
-        // ── 5. Ricostruisce l'auxiliary dict sostituendo solo i metadati ──────
+        // ── 5. Re-build auxiliary dict replacing only metadata ----------──────
         var newAuxDict = auxDict
         newAuxDict[metaKey] = newMeta
 
-        // ── 6. Riscrive il file HEIC via file temporaneo ──────────────────────
+        // ── 6. Re-write HEIC file via temp file ---------──────────────────────
         let tempURL = url.deletingLastPathComponent()
                          .appendingPathComponent(".__patch_tmp_\(UUID().uuidString).heic")
         defer { try? FileManager.default.removeItem(at: tempURL) }
@@ -400,7 +394,7 @@ class HDRProcessor {
         }
     }
 
-    /// Estrae HDRToneMap:AlternateHeadroom da un CGImageMetadata, se presente.
+    /// Extract HDRToneMap:AlternateHeadroom from a CGImageMetadata, if present
     private func extractAlternateHeadroom(from cgmd: CGImageMetadata) -> Float? {
         guard let tags = CGImageMetadataCopyTags(cgmd) as? [CGImageMetadataTag] else {
             return nil
@@ -415,14 +409,14 @@ class HDRProcessor {
         return nil
     }
 
-    /// Costruisce un CGImageMetadata con i tag HDRGainMap richiesti da Adobe:
+    /// Build a CGImageMetadata with HDRGainMap tags required by Adobe:
     ///
     ///   iio:hasXMP                    = True
-    ///   HDRGainMap:HDRGainMapVersion  = 131072  (0x00020000, versione 2.0)
-    ///   HDRGainMap:HDRGainMapHeadroom = <headroom lineare>
+    ///   HDRGainMap:HDRGainMapVersion  = 131072  (0x00020000, version 2.0)
+    ///   HDRGainMap:HDRGainMapHeadroom = <linear headroom>
     ///
-    /// Usa CGImageMetadataSetValueWithPath invece del round-trip XMP per evitare
-    /// problemi con tag strutturati annidati (es. HDRToneMap:ChannelMetadata).
+    /// Use CGImageMetadataSetValueWithPath instead of round-trip XMP to avoid
+    /// issues with nested structural tags (e.g. HDRToneMap:ChannelMetadata).
     private func buildHDRGainMapMetadata(headroom: Float) -> CGImageMetadata? {
         let meta = CGImageMetadataCreateMutable()
 
