@@ -126,9 +126,7 @@ Metal acceleration is automatically detected and enabled when available, with gr
 ## System Requirements
 
 - **macOS 15.x** (Sequoia) or later
-- **Tested on**: Intel-based Mac running macOS 15.x
-- **Apple Silicon**: Please test and report back!
-
+- **Tested on**: Intel-based Mac running macOS 15.x + Apple Silicon running macOS 26.x
 
 ## Verifying Output
 
