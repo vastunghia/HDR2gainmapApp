@@ -174,37 +174,6 @@ class HDRProcessor {
         }
     }
     
-    private func materializeGainMapL8(_ gm: CIImage, in ctx: CIContext) -> CIImage? {
-        let extent = gm.extent.integral
-        let w = Int(extent.width)
-        let h = Int(extent.height)
-        guard w > 0, h > 0 else { return nil }
-
-        // rowBytes multiplo di 4 (evita warning / padding issues)
-        let rowBytes = ((w + 3) / 4) * 4
-        var data = Data(count: rowBytes * h)
-
-        data.withUnsafeMutableBytes { buf in
-            guard let base = buf.baseAddress else { return }
-            ctx.render(
-                gm,
-                toBitmap: base,
-                rowBytes: rowBytes,
-                bounds: extent,
-                format: .L8,
-                colorSpace: nil
-            )
-        }
-
-        return CIImage(
-            bitmapData: data,
-            bytesPerRow: rowBytes,
-            size: CGSize(width: w, height: h),
-            format: .L8,
-            colorSpace: nil
-        )
-    }
-    
     /// Exports a single image as HEIC with gain map
     func exportImage(_ image: HDRImage, to outputURL: URL) async throws {
         
@@ -253,8 +222,9 @@ class HDRProcessor {
         
         // Generate gain map (temp HEIC)
         let tmp_options: [CIImageRepresentationOption: Any] = [
-            .hdrImage: hdr,
-            .hdrGainMapAsRGB: false
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
+            CIImageRepresentationOption.hdrImage: hdr,
+            CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
         guard let tmp_data = encode_ctx.heifRepresentation(of: sdrBase,
@@ -264,17 +234,8 @@ class HDRProcessor {
             throw ProcessingError.gainMapGenerationFailed
         }
         
-        let gmOptions: [CIImageOption: Any] = [.auxiliaryHDRGainMap: true,
-                                               .applyOrientationProperty: true]
-
-        guard let gain_map = CIImage(data: tmp_data, options: gmOptions) else {
+        guard let gain_map = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
             throw ProcessingError.gainMapExtractionFailed
-        }
-        
-        if #available(macOS 26, *) {
-            if let gm2 = materializeGainMapL8(gain_map, in: encode_ctx) {
-                let gain_map = gm2
-            }
         }
         
         // Add Apple Maker metadata + merge with original metadata
