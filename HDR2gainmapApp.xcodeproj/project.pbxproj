@@ -71,6 +71,7 @@
 		49EE588B2F2367C1009E65E0 /* Exceptions for "Scripts" folder in "HDR2gainmapApp" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
+				fix_gainmap.swift,
 				inspect_metadata.swift,
 				verify_export.swift,
 			);

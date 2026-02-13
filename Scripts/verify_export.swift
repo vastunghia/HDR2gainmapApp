@@ -254,12 +254,12 @@ func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, 
     
 //    // Check EXIF/IPTC preservation
 //    if let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any] {
-//        
+//
 //        details += "\n📋 METADATA PRESERVATION:\n"
-//        
+//
 //        if let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] {
 //            details += "   ✅ EXIF: FOUND (\(exif.count) entries)\n"
-//            
+//
 //            // Mostra alcuni campi comuni
 //            if let dateTime = exif["DateTimeOriginal"] as? String {
 //                details += "      - Date: \(dateTime)\n"
@@ -270,23 +270,23 @@ func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, 
 //        } else {
 //            details += "   ⚠️  EXIF: NOT FOUND\n"
 //        }
-//        
+//
 //        if let iptc = properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any] {
 //            details += "   ✅ IPTC: FOUND (\(iptc.count) entries)\n"
-//            
+//
 //            if let copyright = iptc["CopyrightNotice"] as? String {
 //                details += "      - Copyright: \(copyright)\n"
 //            }
 //        } else {
 //            details += "   ⚠️  IPTC: NOT FOUND\n"
 //        }
-//        
+//
 //        if let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
 //            details += "   ✅ TIFF: FOUND (\(tiff.count) entries)\n"
 //        } else {
 //            details += "   ⚠️  TIFF: NOT FOUND\n"
 //        }
-//        
+//
 //        if let gps = properties[kCGImagePropertyGPSDictionary as String] as? [String: Any] {
 //            details += "   ✅ GPS: FOUND (\(gps.count) entries)\n"
 //        }
