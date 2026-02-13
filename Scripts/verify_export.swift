@@ -1,8 +1,15 @@
 #!/usr/bin/env swift
 
 import Foundation
+import CoreFoundation
 import ImageIO
 import CoreGraphics
+
+func cfTypeDescription(_ any: Any) -> String {
+    let cf = any as CFTypeRef
+    let tid = CFGetTypeID(cf)
+    return (CFCopyTypeIDDescription(tid) as String?) ?? "Unknown CFTypeID=\(tid)"
+}
 
 func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, details: String) {
     
@@ -15,6 +22,8 @@ func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, 
     
     var details = ""
     var hasGainMap = false
+    var hasAppleGainMap = false
+    var hasISOGainMap = false
     
     // === DEBUG: Elenca TUTTE le auxiliary data types disponibili ===
     details += "\n🔍 AUXILIARY DATA EXPLORATION:\n"
@@ -22,22 +31,153 @@ func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, 
     // Lista di possibili chiavi gain map note
     let knownGainMapKeys: [CFString] = [
         kCGImageAuxiliaryDataTypeHDRGainMap,
+        kCGImageAuxiliaryDataTypeISOGainMap,
         "HDRGainMap" as CFString,
         "urn:com:apple:photo:2020:aux:hdrgainmap" as CFString,
         "public.auxiliary-data.hdrgainmap" as CFString,
     ]
     
     for key in knownGainMapKeys {
-        if let auxData = CGImageSourceCopyAuxiliaryDataInfoAtIndex(imageSource, 0, key) {
-            hasGainMap = true
-            let keyStr = key as String
-            details += "   ✅ Found auxiliary data with key: \(keyStr)\n"
-            
-            if let auxDict = auxData as? [String: Any] {
-                details += "      Properties: \(auxDict.keys.joined(separator: ", "))\n"
+        guard let auxData = CGImageSourceCopyAuxiliaryDataInfoAtIndex(imageSource, 0, key) else {
+            continue
+        }
+
+        hasGainMap = true
+        let keyStr = key as String
+        details += "   ✅ Found auxiliary data with key: \(keyStr)\n"
+
+        if key == kCGImageAuxiliaryDataTypeHDRGainMap { hasAppleGainMap = true }
+        if key == kCGImageAuxiliaryDataTypeISOGainMap { hasISOGainMap = true }
+
+        guard let auxDict = auxData as? [String: Any] else {
+            details += "      ⚠️ Auxiliary data is not a [String:Any] dictionary\n"
+            continue
+        }
+
+        details += "      Properties: \(auxDict.keys.sorted().joined(separator: ", "))\n"
+
+        // 1) Stampa DataDescription (se presente)
+        if let desc = auxDict[kCGImageAuxiliaryDataInfoDataDescription as String] {
+            details += "      DataDescription: \(desc)\n"
+        }
+
+        // 2) Prova a decodificare il payload come immagine (se presente)
+        if let data = auxDict[kCGImageAuxiliaryDataInfoData as String] as? Data {
+            details += "      Data bytes: \(data.count)\n"
+
+            if let gmSrc = CGImageSourceCreateWithData(data as CFData, nil),
+               let gmProps = CGImageSourceCopyPropertiesAtIndex(gmSrc, 0, nil) as? [String: Any] {
+
+                let w = gmProps[kCGImagePropertyPixelWidth as String] ?? "?"
+                let h = gmProps[kCGImagePropertyPixelHeight as String] ?? "?"
+                details += "      Payload decodes as image: ✅ (\(w)x\(h))\n"
+            } else {
+                details += "      Payload decodes as image: ❌ (cannot decode)\n"
+            }
+        } else {
+            details += "      ⚠️ No kCGImageAuxiliaryDataInfoData payload found\n"
+        }
+        
+        // Prova entrambe le possibili chiavi (a volte il valore stampato nelle keys è "Metadata")
+        let metaKeyCandidates = [
+            kCGImageAuxiliaryDataInfoMetadata as String,
+            "Metadata"
+        ]
+
+        var mdAny: Any? = nil
+        for k in metaKeyCandidates {
+            if let v = auxDict[k] {
+                mdAny = v
+                details += "      ✅ Found metadata under key: \(k)\n"
+                break
             }
         }
+
+        guard let mdAnyUnwrapped = mdAny else {
+            details += "      HDRGainMap metadata: ❌ not found (tried \(metaKeyCandidates))\n"
+            // (opzionale) dump keys per debug
+            details += "      Aux keys are: \(auxDict.keys.sorted())\n"
+            // continua
+            continue
+        }
+        
+        if let mdObj = auxDict[kCGImageAuxiliaryDataInfoMetadata as String] {
+            details += "      Metadata CFType: \(cfTypeDescription(mdObj))\n"
+
+            // Caso 1: CGImageMetadata
+            if CFGetTypeID(mdObj as CFTypeRef) == CGImageMetadataGetTypeID() {
+                let cgmd = mdObj as! CGImageMetadata
+
+                if let xmp = CGImageMetadataCreateXMPData(cgmd, nil) as Data?,
+                   let xmpStr = String(data: xmp, encoding: .utf8) {
+                    // (debug) se vuoi stampare tutto:
+                    // details += "      XMP:\n\(xmpStr)\n"
+
+                    if xmpStr.contains("HDRGainMapVersion") {
+                        details += "      HDRGainMapVersion: ✅ present in XMP\n"
+                    } else {
+                        details += "      HDRGainMapVersion: ❌ not found in XMP\n"
+                    }
+                } else {
+                    details += "      ⚠️ Could not export CGImageMetadata to XMP\n"
+                }
+            }
+
+            // Caso 2: a volte è CFData (già XMP o simili)
+            else if CFGetTypeID(mdObj as CFTypeRef) == CFDataGetTypeID(),
+                    let data = mdObj as? Data,
+                    let s = String(data: data, encoding: .utf8) {
+                details += "      Metadata is CFData (utf8 len \(s.count))\n"
+                details += s.contains("HDRGainMapVersion")
+                    ? "      HDRGainMapVersion: ✅ present in data\n"
+                    : "      HDRGainMapVersion: ❌ not found in data\n"
+            } else {
+                details += "      HDRGainMap metadata: present but unhandled type\n"
+            }
+            
+            if CFGetTypeID(mdObj as CFTypeRef) == CGImageMetadataGetTypeID() {
+                let cgmd = mdObj as! CGImageMetadata
+                if let tags = CGImageMetadataCopyTags(cgmd) as? [CGImageMetadataTag] {
+                    for tag in tags {
+                        let ns = (CGImageMetadataTagCopyNamespace(tag) as String?) ?? "?"
+                        let prefix = (CGImageMetadataTagCopyPrefix(tag) as String?) ?? "?"
+                        let name = (CGImageMetadataTagCopyName(tag) as String?) ?? "?"
+                        let value = CGImageMetadataTagCopyValue(tag)
+                        details += "      TAG ns=\(ns) prefix=\(prefix) name=\(name) value=\(String(describing: value))\n"
+                    }
+                }
+            }
+
+        }
+
+        details += "      Metadata value type: \(type(of: mdAnyUnwrapped))\n"
+
+        // Cast robusto
+        let mdDict: [AnyHashable: Any]?
+        if let d = mdAnyUnwrapped as? [AnyHashable: Any] {
+            mdDict = d
+        } else if let d = mdAnyUnwrapped as? NSDictionary {
+            mdDict = d as? [AnyHashable: Any]
+        } else {
+            mdDict = nil
+        }
+
+        if let md = mdDict {
+            details += "      Metadata keys: \(md.keys.map { "\($0)" }.sorted())\n"
+            if let v = md["HDRGainMapVersion"] {
+                details += "      HDRGainMapVersion: \(v)\n"
+            } else {
+                details += "      HDRGainMapVersion: ❌ missing\n"
+            }
+        } else {
+            details += "      HDRGainMap metadata: ⚠️ present but not a dictionary we can read\n"
+        }
+        
     }
+    
+    // opzionale: riepilogo chiaro
+    details += "\n   Apple HDRGainMap: \(hasAppleGainMap ? "✅" : "❌")\n"
+    details += "   ISO GainMap:      \(hasISOGainMap ? "✅" : "❌")\n"
     
     // Prova anche a enumerare TUTTE le auxiliary data (non documentato ma proviamo)
     if let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any] {
@@ -112,45 +252,45 @@ func verifyHEICFile(at path: String) -> (hasGainMap: Bool, hasMakerApple: Bool, 
         }
     }
     
-    // Check EXIF/IPTC preservation
-    if let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any] {
-        
-        details += "\n📋 METADATA PRESERVATION:\n"
-        
-        if let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] {
-            details += "   ✅ EXIF: FOUND (\(exif.count) entries)\n"
-            
-            // Mostra alcuni campi comuni
-            if let dateTime = exif["DateTimeOriginal"] as? String {
-                details += "      - Date: \(dateTime)\n"
-            }
-            if let make = exif["Make"] as? String {
-                details += "      - Camera Make: \(make)\n"
-            }
-        } else {
-            details += "   ⚠️  EXIF: NOT FOUND\n"
-        }
-        
-        if let iptc = properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any] {
-            details += "   ✅ IPTC: FOUND (\(iptc.count) entries)\n"
-            
-            if let copyright = iptc["CopyrightNotice"] as? String {
-                details += "      - Copyright: \(copyright)\n"
-            }
-        } else {
-            details += "   ⚠️  IPTC: NOT FOUND\n"
-        }
-        
-        if let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
-            details += "   ✅ TIFF: FOUND (\(tiff.count) entries)\n"
-        } else {
-            details += "   ⚠️  TIFF: NOT FOUND\n"
-        }
-        
-        if let gps = properties[kCGImagePropertyGPSDictionary as String] as? [String: Any] {
-            details += "   ✅ GPS: FOUND (\(gps.count) entries)\n"
-        }
-    }
+//    // Check EXIF/IPTC preservation
+//    if let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any] {
+//
+//        details += "\n📋 METADATA PRESERVATION:\n"
+//
+//        if let exif = properties[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+//            details += "   ✅ EXIF: FOUND (\(exif.count) entries)\n"
+//
+//            // Mostra alcuni campi comuni
+//            if let dateTime = exif["DateTimeOriginal"] as? String {
+//                details += "      - Date: \(dateTime)\n"
+//            }
+//            if let make = exif["Make"] as? String {
+//                details += "      - Camera Make: \(make)\n"
+//            }
+//        } else {
+//            details += "   ⚠️  EXIF: NOT FOUND\n"
+//        }
+//
+//        if let iptc = properties[kCGImagePropertyIPTCDictionary as String] as? [String: Any] {
+//            details += "   ✅ IPTC: FOUND (\(iptc.count) entries)\n"
+//
+//            if let copyright = iptc["CopyrightNotice"] as? String {
+//                details += "      - Copyright: \(copyright)\n"
+//            }
+//        } else {
+//            details += "   ⚠️  IPTC: NOT FOUND\n"
+//        }
+//
+//        if let tiff = properties[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
+//            details += "   ✅ TIFF: FOUND (\(tiff.count) entries)\n"
+//        } else {
+//            details += "   ⚠️  TIFF: NOT FOUND\n"
+//        }
+//
+//        if let gps = properties[kCGImagePropertyGPSDictionary as String] as? [String: Any] {
+//            details += "   ✅ GPS: FOUND (\(gps.count) entries)\n"
+//        }
+//    }
     
     return (hasGainMap, hasMakerApple, details)
 }
