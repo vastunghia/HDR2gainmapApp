@@ -59,7 +59,6 @@
 				Models/ProcessingError.swift,
 				Models/ProcessingSettings.swift,
 				Models/RawPixelData.swift,
-				Utilities/ExportMethodPreference.swift,
 				Utilities/FilenameHelper.swift,
 				Utilities/HDRProcessorUtilities.swift,
 				Utilities/HistogramCalculator.swift,

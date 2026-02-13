@@ -280,19 +280,17 @@ class HDRProcessor {
             CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         
-        let method = resolveExportMethodPreference()
-        switch method {
-        case .heif:
+        if #available(macOS 26.0, *) {
+            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
+                                                     to: outputURL,
+                                                     colorSpace: p3_cs,
+                                                     options: export_options)
+        } else {
             try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
                                                    to: outputURL,
                                                    format: .RGB10,
                                                    colorSpace: p3_cs,
                                                    options: export_options)
-        case .heif10:
-            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
-                                                     to: outputURL,
-                                                     colorSpace: p3_cs,
-                                                     options: export_options)
         }
         
         // On macOS 26+, Core Image writes the gain map with the new

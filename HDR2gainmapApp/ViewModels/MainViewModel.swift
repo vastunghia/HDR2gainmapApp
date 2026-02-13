@@ -519,6 +519,11 @@ class MainViewModel {
         for (index, image) in images.enumerated() {
             exportCurrentFile = image.fileName
             
+            // Gives control to MainActor for one cycle,
+            // so that SwiftUI can render the overlay before
+            // starting the hard work
+            try? await Task.sleep(for: .milliseconds(32))
+            
             var isValid = true
             do {
                 _ = try await processor.generatePreview(for: image)
