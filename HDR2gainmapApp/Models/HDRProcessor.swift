@@ -294,7 +294,165 @@ class HDRProcessor {
                                                  colorSpace: p3_cs,
                                                  options: export_options)
 //        }
+        
+        // ✅ NUOVO: su macOS 26+, Core Image scrive la gain map con il nuovo
+        // schema HDRToneMap (ISO 21496-1) invece del vecchio HDRGainMap Apple.
+        // Adobe Gain Map Demo App (e altri tool) si aspettano ancora i tag
+        // HDRGainMap classici → li iniettamo in post come patch al file.
+        try patchGainMapMetadataIfNeeded(at: outputURL, derivedHeadroom: derivedHeadroom)
+
     }
+    
+    
+    // MARK: - Gain Map Metadata Patch (macOS 26+)
+
+    /// Entry point del patch. Viene eseguito solo su macOS 26+, dove Core Image
+    /// scrive la gain map usando il namespace HDRToneMap (ISO 21496-1) invece
+    /// del namespace HDRGainMap Apple classico atteso da Adobe e altri tool.
+    ///
+    /// Il metodo:
+    ///  1. Legge l'auxiliary data HDRGainMap già scritta da Core Image
+    ///  2. Determina l'headroom (da HDRToneMap:AlternateHeadroom o da MakerApple)
+    ///  3. Costruisce programmaticamente un nuovo CGImageMetadata con i tag
+    ///     HDRGainMap classici (senza round-trip XMP, che fallirebbe sui tag
+    ///     strutturati annidati come HDRToneMap:ChannelMetadata)
+    ///  4. Riscrive il file HEIC sostituendo solo i metadati dell'auxiliary data
+    ///
+    /// - Parameters:
+    ///   - url: URL del file HEIC appena scritto da Core Image
+    ///   - derivedHeadroom: headroom calcolato dal pipeline di export (usato come
+    ///     fallback se non disponibile nell'auxiliary data)
+    private func patchGainMapMetadataIfNeeded(at url: URL, derivedHeadroom: Float) throws {
+
+        // Esegui solo su macOS 26+
+        guard #available(macOS 26.0, *) else { return }
+
+        // ── 1. Apri il file appena scritto ────────────────────────────────────
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return }
+
+        // ── 2. Leggi l'auxiliary data ─────────────────────────────────────────
+        guard let rawAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+                    src, 0, kCGImageAuxiliaryDataTypeHDRGainMap),
+              let auxDict = rawAux as? [String: Any] else {
+            // Nessuna gain map trovata: niente da patchare
+            return
+        }
+
+        let metaKey = kCGImageAuxiliaryDataInfoMetadata as String
+
+        // ── 3. Determina l'headroom ───────────────────────────────────────────
+        //
+        // Priorità:
+        //  a) HDRToneMap:AlternateHeadroom nell'auxiliary data — il più preciso
+        //     perché scritto direttamente dall'encoder macOS 26
+        //  b) derivedHeadroom passato dal pipeline di export — già calcolato,
+        //     evita di rileggere MakerApple dal file
+        //  c) Fallback: legge MakerApple dal file (percorso difensivo)
+        //
+        let headroom: Float
+
+        if let metaObj = auxDict[metaKey],
+           CFGetTypeID(metaObj as CFTypeRef) == CGImageMetadataGetTypeID() {
+            let cgmd = unsafeBitCast(metaObj as CFTypeRef, to: CGImageMetadata.self)
+            if let ah = extractAlternateHeadroom(from: cgmd), ah > 1.0 {
+                headroom = ah
+            } else {
+                headroom = max(1.0, derivedHeadroom)
+            }
+        } else {
+            headroom = max(1.0, derivedHeadroom)
+        }
+
+        // ── 4. Costruisce i nuovi metadati HDRGainMap ─────────────────────────
+        guard let newMeta = buildHDRGainMapMetadata(headroom: headroom) else { return }
+
+        // ── 5. Ricostruisce l'auxiliary dict sostituendo solo i metadati ──────
+        var newAuxDict = auxDict
+        newAuxDict[metaKey] = newMeta
+
+        // ── 6. Riscrive il file HEIC via file temporaneo ──────────────────────
+        let tempURL = url.deletingLastPathComponent()
+                         .appendingPathComponent(".__patch_tmp_\(UUID().uuidString).heic")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let utType = CGImageSourceGetType(src) ?? ("public.heic" as CFString)
+
+        guard let dst = CGImageDestinationCreateWithURL(
+                tempURL as CFURL, utType, 1, nil) else { return }
+
+        if let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) {
+            let imgProps = CGImageSourceCopyPropertiesAtIndex(src, 0, nil)
+            CGImageDestinationAddImage(dst, cgImg, imgProps)
+        }
+
+        CGImageDestinationAddAuxiliaryDataInfo(
+            dst,
+            kCGImageAuxiliaryDataTypeHDRGainMap,
+            newAuxDict as CFDictionary
+        )
+
+        guard CGImageDestinationFinalize(dst) else { return }
+
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try? FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+        } else {
+            try? FileManager.default.moveItem(at: tempURL, to: url)
+        }
+    }
+
+    /// Estrae HDRToneMap:AlternateHeadroom da un CGImageMetadata, se presente.
+    private func extractAlternateHeadroom(from cgmd: CGImageMetadata) -> Float? {
+        guard let tags = CGImageMetadataCopyTags(cgmd) as? [CGImageMetadataTag] else {
+            return nil
+        }
+        for tag in tags {
+            let name = (CGImageMetadataTagCopyName(tag) as String?) ?? ""
+            if name == "AlternateHeadroom",
+               let v = CGImageMetadataTagCopyValue(tag) as? NSNumber {
+                return v.floatValue
+            }
+        }
+        return nil
+    }
+
+    /// Costruisce un CGImageMetadata con i tag HDRGainMap richiesti da Adobe:
+    ///
+    ///   iio:hasXMP                    = True
+    ///   HDRGainMap:HDRGainMapVersion  = 131072  (0x00020000, versione 2.0)
+    ///   HDRGainMap:HDRGainMapHeadroom = <headroom lineare>
+    ///
+    /// Usa CGImageMetadataSetValueWithPath invece del round-trip XMP per evitare
+    /// problemi con tag strutturati annidati (es. HDRToneMap:ChannelMetadata).
+    private func buildHDRGainMapMetadata(headroom: Float) -> CGImageMetadata? {
+        let meta = CGImageMetadataCreateMutable()
+
+        let iioNS     = "http://ns.apple.com/ImageIO/1.0/"    as CFString
+        let iioPrefix = "iio"                                  as CFString
+        let gmNS      = "http://ns.apple.com/HDRGainMap/1.0/" as CFString
+        let gmPrefix  = "HDRGainMap"                           as CFString
+
+        CGImageMetadataRegisterNamespaceForPrefix(meta, iioNS, iioPrefix, nil)
+        CGImageMetadataRegisterNamespaceForPrefix(meta, gmNS,  gmPrefix,  nil)
+
+        CGImageMetadataSetValueWithPath(
+            meta, nil,
+            "iio:hasXMP" as CFString,
+            kCFBooleanTrue
+        )
+        CGImageMetadataSetValueWithPath(
+            meta, nil,
+            "HDRGainMap:HDRGainMapVersion" as CFString,
+            NSNumber(value: 131_072)
+        )
+        CGImageMetadataSetValueWithPath(
+            meta, nil,
+            "HDRGainMap:HDRGainMapHeadroom" as CFString,
+            NSNumber(value: headroom)
+        )
+
+        return meta
+    }
+
     
     // MARK: - Metadata Extraction
 
