@@ -9,20 +9,32 @@ struct CLIArguments {
     let outputPath: String
     let verbose: Bool
     let verify: Bool
-    
+    let rgbGainMap: Bool
+    let gainMapSubsample: Int?
+
     static func parse() -> CLIArguments? {
         let args = CommandLine.arguments
-        
+
         // Flags
         var verbose = false
         var verify = false
+        var rgbGainMap = false
+        var gainMapSubsample: Int? = nil
         var positionalArgs: [String] = []
-        
+
         for arg in args.dropFirst() {
             if arg == "--verbose" || arg == "-v" {
                 verbose = true
             } else if arg == "--verify" {
                 verify = true
+            } else if arg == "--rgb-gainmap" {
+                rgbGainMap = true
+            } else if arg.hasPrefix("--gainmap-subsample=") {
+                guard let v = Int(arg.dropFirst("--gainmap-subsample=".count)), v >= 1 else {
+                    print("❌ Invalid value for --gainmap-subsample: \(arg) (must be an integer ≥ 1)")
+                    return nil
+                }
+                gainMapSubsample = v
             } else if arg.hasPrefix("--") || arg.hasPrefix("-") {
                 print("❌ Unknown flag: \(arg)")
                 return nil
@@ -30,16 +42,18 @@ struct CLIArguments {
                 positionalArgs.append(arg)
             }
         }
-        
+
         guard positionalArgs.count == 2 else {
             return nil
         }
-        
+
         return CLIArguments(
             inputPath: positionalArgs[0],
             outputPath: positionalArgs[1],
             verbose: verbose,
-            verify: verify
+            verify: verify,
+            rgbGainMap: rgbGainMap,
+            gainMapSubsample: gainMapSubsample
         )
     }
     
@@ -54,7 +68,9 @@ struct CLIArguments {
         Options:
           -v, --verbose    Print detailed processing information
           --verify         Verify output file after export
-        
+          --rgb-gainmap        Encode an RGB (3-channel) gain map instead of luma-only
+          --gainmap-subsample=N  Gain map resolution divisor: 1 = full, 2 = half (default)
+
         Example:
           HDR2gainmapCLI input.png output.heic --verify
         """)
@@ -69,53 +85,48 @@ func verifyExportedImage(at url: URL, verbose: Bool) -> Bool {
         return false
     }
     
-    // Check gain map
-    var hasGainMap = false
-    if let _ = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
-        imageSource, 0, kCGImageAuxiliaryDataTypeHDRGainMap as CFString
-    ) {
-        hasGainMap = true
-        if verbose {
-            print("✅ Gain map: FOUND")
-        }
+    // Check gain map — accept either the standard ISO 21496-1 slot or the legacy Apple slot.
+    let hasISOGainMap = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+        imageSource, 0, kCGImageAuxiliaryDataTypeISOGainMap) != nil
+    let hasAppleGainMap = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
+        imageSource, 0, kCGImageAuxiliaryDataTypeHDRGainMap) != nil
+
+    if hasISOGainMap {
+        if verbose { print("✅ Gain map: FOUND (ISO 21496-1)") }
+    } else if hasAppleGainMap {
+        if verbose { print("✅ Gain map: FOUND (Apple HDRGainMap)") }
     } else {
         print("❌ Gain map: NOT FOUND")
     }
-    
-    // Check Apple metadata
+
+    // Check Apple maker tags — informational only. ISO output intentionally omits them.
     var hasMakerApple = false
-    var maker33: Float? = nil
-    var maker48: Float? = nil
-    
     if let properties = CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any],
        let makerApple = properties[kCGImagePropertyMakerAppleDictionary as String] as? [String: Any] {
-        
-        if let m33 = makerApple["33"] as? NSNumber {
-            maker33 = m33.floatValue
-        }
-        if let m48 = makerApple["48"] as? NSNumber {
-            maker48 = m48.floatValue
-        }
-        
+        let maker33 = (makerApple["33"] as? NSNumber)?.floatValue
+        let maker48 = (makerApple["48"] as? NSNumber)?.floatValue
         hasMakerApple = (maker33 != nil && maker48 != nil)
-        
         if verbose {
-            print("✅ MakerApple Dictionary: FOUND")
-            if let m33 = maker33, let m48 = maker48 {
-                print("   Tag 33: \(m33)")
-                print("   Tag 48: \(m48)")
+            if hasMakerApple {
+                print("ℹ️  MakerApple 33/48: present (legacy headroom encoding)")
+                if let m33 = maker33 { print("   Tag 33: \(m33)") }
+                if let m48 = maker48 { print("   Tag 48: \(m48)") }
+            } else {
+                print("ℹ️  MakerApple 33/48: absent (expected for ISO output)")
             }
         }
-    } else {
-        print("❌ MakerApple Dictionary: NOT FOUND")
+    } else if verbose {
+        print("ℹ️  MakerApple 33/48: absent (expected for ISO output)")
     }
-    
-    let isValid = hasGainMap && hasMakerApple
-    
+
+    // A file is valid if it carries a gain map under either scheme. The legacy Apple scheme
+    // additionally relies on the maker tags, so require them in that case.
+    let isValid = hasISOGainMap || (hasAppleGainMap && hasMakerApple)
+
     if verbose {
         print("\n📊 Verification Result: \(isValid ? "✅ VALID" : "❌ INVALID")")
     }
-    
+
     return isValid
 }
 
@@ -152,7 +163,19 @@ func main() async {
     
     // Create HDRImage and processor
     let image = HDRImage(url: inputURL, loadThumbnailImmediately: false)
+    image.settings.gainMapAsRGB = args.rgbGainMap
+    // The engine reads the gain map subsample factor from UserDefaults (shared with the GUI
+    // preference). Default is 2 (half) when unset.
+    if let gs = args.gainMapSubsample {
+        UserDefaults.standard.set(gs, forKey: "gainMapSubsampleFactor")
+    }
     let processor = HDRProcessor.shared
+
+    if args.verbose {
+        print("   Gain map: \(args.rgbGainMap ? "RGB (3-channel)" : "luma (monochrome)")")
+        let subsample = args.gainMapSubsample ?? 2
+        print("   Gain map resolution: \(subsample <= 1 ? "full (1×)" : "1/\(subsample)×")")
+    }
     
     do {
         // Validate HDR image

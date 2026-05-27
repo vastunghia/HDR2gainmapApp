@@ -31,6 +31,8 @@ The resulting HEIC files work seamlessly (i.e. **the SDR or the HDR version of t
 - **Live HDR and SDR histograms** with split-axis layout (sRGB curve for SDR, logarithmic for HDR)
 - **Detailed clipping statistics** with interactive legend window
 - **Batch export** with progress tracking and possibility to append a string of your choice to all file names
+- **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software
+- **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×)
 - **Metadata preserved** in output files
 - **Metal-accelerated** histogram and peak luminance calculation
 
@@ -95,23 +97,27 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 
 **In a nutshell:** this control allowing you to manually select source / target headroom specification
 
-### 2. Gain Map and Apple Metadata Generation
+### 2. Gain Map Generation
 
-After tone-mapping, to ensure full compatibility with Apple's HDR rendering pipeline, the application computes and embeds **Maker Apple metadata** (MakerNote tags 33 and 48) based on the derived source headroom: basically, what it does is inverting the calculation of headroom based on metadata [as documented by Apple](https://developer.apple.com/documentation/appkit/applying-apple-hdr-effect-to-your-photos).
+After tone-mapping, the app generates the gain map by letting Apple's imaging pipeline compute it on the fly from the pair of images:
 
-Finally, the app prepares the final HEIC file by baking together
-	- the base SDR image, prepared according to your taste
-	- the original HDR image, from which Apple API computes a gain map on the fly, making the image displayable as the original HDR on proper displays
-	- Apple Metadata, providing full Apple compatibility
+- the base SDR image, prepared according to your taste
+- the original HDR image, from which the gain map is derived
+
+The gain map encodes the per-pixel boost needed to reconstruct the HDR rendition from the SDR base, so the image displays as the original HDR on capable displays and as the SDR base everywhere else.
+
+The result is embedded as a standards-based **ISO 21496-1 gain map** — the same format Apple itself writes for native HDR captures on recent systems, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
+
+> **Note:** earlier versions instead embedded the legacy Apple `HDRGainMap` scheme together with Maker Apple metadata (MakerNote tags 33 and 48). That path has been removed in favor of the ISO 21496-1 format.
 
 ### 3. Final Export
 
-The application writes the final HEIC file using:
+The application writes the final HEIC file using `CIContext.writeHEIF10Representation()` on macOS 26 or later, falling back to a 10-bit `CIContext.writeHEIFRepresentation()` on earlier systems (selected automatically). It then re-encodes the file so the gain map is stored in the standard ISO 21496-1 auxiliary slot.
 
-- `CIContext.writeHEIFRepresentation()` (default) or
-- `CIContext.writeHEIF10Representation()` (macOS 14+, selectable in Preferences, try switching to this mode if the default one fails)
+Two export settings are configurable in the Preferences window:
 
-Export quality is configurable (default: 0.97) via the Preferences window.
+- **HEIC Quality** — the HEIF compression quality (default: 0.95); higher quality produces larger files with better fidelity.
+- **Gain Map Resolution** — whether the gain map is stored at half (½×, the default, matching Apple's native HDR captures) or full (1×) image resolution. A gain map is smooth and low-detail, so half resolution shrinks the file with minimal visual impact.
 
 ## Metal Acceleration
 
@@ -133,7 +139,7 @@ Metal acceleration is automatically detected and enabled when available, with gr
 To verify that your exported HEIC files contain valid gain maps and render correctly in HDR:
 
 1. **Use Adobe's Gain Map Demo App**:  
-   Download from [here](https://www.adobe.com/go/gainmap_demoapp_mac) and check for your output images to be reported as an "SDR photo with a Gain Map". Pressing ⌘+I should also report "Gain Map Type: Apple"
+   Download from [here](https://www.adobe.com/go/gainmap_demoapp_mac) and check for your output images to be reported as an "SDR photo with a Gain Map". Pressing ⌘+I should also report "Gain Map Type: ISO 21496-1"
 
 2. **Test in Apple Photos**:
    - Import the HEIC file into Photos.app

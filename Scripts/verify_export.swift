@@ -314,8 +314,10 @@ print(details)
 print(String(repeating: "=", count: 70))
 print("\n📊 SUMMARY:")
 print("   Gain Map:        \(hasGainMap ? "✅ PRESENT" : "❌ MISSING")")
-print("   Apple Metadata:  \(hasMakerApple ? "✅ PRESENT" : "❌ MISSING")")
-print("   Overall Result:  \(hasGainMap && hasMakerApple ? "✅ VALID" : "❌ INVALID")")
+print("   Apple Metadata:  \(hasMakerApple ? "present (legacy)" : "absent (expected for ISO output)")")
+// A gain map under any scheme (ISO 21496-1 or legacy Apple) counts as valid. The maker tags
+// are intentionally absent for ISO output, so they no longer gate validity.
+print("   Overall Result:  \(hasGainMap ? "✅ VALID" : "❌ INVALID")")
 print(String(repeating: "=", count: 70) + "\n")
 
-exit(hasGainMap && hasMakerApple ? 0 : 1)
+exit(hasGainMap ? 0 : 1)

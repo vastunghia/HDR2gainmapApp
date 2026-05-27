@@ -59,8 +59,15 @@ class ProcessingSettings {
     var showClippedOverlay: Bool = true
     var overlayColor: String = "magenta"
     
+    // MARK: - Gain map encoding
+
+    /// Whether to encode the gain map as RGB (3-channel) instead of monochrome (luma).
+    /// Diagnostic/experimental: an RGB gain map can carry per-channel boosts and thus
+    /// preserve highlight saturation that a luma-only gain map cannot restore.
+    var gainMapAsRGB: Bool = false
+
     // MARK: - Export
-    
+
     /// Optional suffix to append to exported filenames
     var filenameSuffix: String = ""
     
