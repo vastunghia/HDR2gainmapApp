@@ -118,8 +118,8 @@ jobs:
     #     limit-access-to-actor: true
 
   test-cli-export-macos15:
-    name: Test on macOS 15
-    runs-on: macos-15
+    name: Test on macOS 15 (Intel)
+    runs-on: macos-15-intel
 
     steps:
     - name: Checkout repository
