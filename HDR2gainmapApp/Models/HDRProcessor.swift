@@ -392,6 +392,18 @@ class HDRProcessor {
         if FileManager.default.fileExists(atPath: url.path) {
             do {
                 _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+            } catch let e as NSError where Self.isCrossDeviceError(e) {
+                // replaceItemAt uses rename(2), which fails with EXDEV when source and
+                // destination live on different volumes (e.g. temp in the sandboxed
+                // boot-volume tmpdir vs. an output folder on an external disk).
+                // moveItem handles cross-device via copy + unlink — at the cost of
+                // atomicity, which is unavoidable here.
+                do {
+                    try FileManager.default.removeItem(at: url)
+                    try FileManager.default.moveItem(at: tempURL, to: url)
+                } catch {
+                    throw ProcessingError.isoConversionFailed("[H] cross-device fallback: \(error)")
+                }
             } catch {
                 throw ProcessingError.isoConversionFailed("[E] replaceItemAt: \(error)")
             }
@@ -402,6 +414,20 @@ class HDRProcessor {
                 throw ProcessingError.isoConversionFailed("[F] moveItem: \(error)")
             }
         }
+    }
+
+    /// True if `error` (or its chained NSUnderlyingError) is POSIX EXDEV — i.e. an attempt
+    /// to move/rename across distinct filesystem volumes. Surfaces both when Foundation
+    /// returns the raw POSIX error and when it wraps it inside an NSCocoaErrorDomain code 512.
+    private static func isCrossDeviceError(_ error: NSError) -> Bool {
+        func isExdev(_ e: NSError) -> Bool {
+            e.domain == NSPOSIXErrorDomain && e.code == 18
+        }
+        if isExdev(error) { return true }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError, isExdev(underlying) {
+            return true
+        }
+        return false
     }
     
     
