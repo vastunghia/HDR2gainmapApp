@@ -99,12 +99,14 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 
 ### 2. Gain Map Generation
 
-After tone-mapping, the app generates the gain map by letting Apple's imaging pipeline compute it on the fly from the pair of images:
+After tone-mapping, the app generates the gain map from the pair of images:
 
 - the base SDR image, prepared according to your taste
 - the original HDR image, from which the gain map is derived
 
 The gain map encodes the per-pixel boost needed to reconstruct the HDR rendition from the SDR base, so the image displays as the original HDR on capable displays and as the SDR base everywhere else.
+
+Internally, the computation is performed by Core Image's HDR-aware HEIF encoder: the SDR base and the original HDR image are passed together to `CIContext.heifRepresentation(...)`, which writes an in-memory HEIF whose auxiliary slot carries the gain map. The app reads that auxiliary image back out so it can be re-embedded in the final output (see Section 3).
 
 The result is embedded as a standards-based **ISO 21496-1 gain map** — the same format Apple itself writes for native HDR captures on recent systems, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
 
@@ -112,7 +114,11 @@ The result is embedded as a standards-based **ISO 21496-1 gain map** — the sam
 
 ### 3. Final Export
 
-The application writes the final HEIC file using `CIContext.writeHEIF10Representation()` on macOS 26 or later, falling back to a 10-bit `CIContext.writeHEIFRepresentation()` on earlier systems (selected automatically). It then re-encodes the file so the gain map is stored in the standard ISO 21496-1 auxiliary slot.
+Once the gain map has been generated, the app writes the final HEIC by combining the SDR base, the gain map, and the preserved source metadata. The export proceeds in two steps:
+
+1. **First write.** The HEIC is written via `CIContext.writeHEIF10Representation()` on macOS 26 or later, or via the 10-bit `CIContext.writeHEIFRepresentation()` on earlier systems (selected automatically). At this point the gain map is embedded under the legacy Apple auxiliary slot that Core Image emits by default.
+
+2. **Re-encode via ImageIO.** The file is then reopened: the gain map is optionally subsampled to the requested resolution (½× by default — see Preferences below) and re-embedded under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot, with matching ISO 21496-1 binary metadata. The primary image is preserved unchanged.
 
 Two export settings are configurable in the Preferences window:
 
