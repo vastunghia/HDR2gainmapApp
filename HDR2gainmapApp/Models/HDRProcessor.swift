@@ -326,14 +326,25 @@ class HDRProcessor {
     /// add it under the ISO aux type, and let ImageIO emit the spec-correct ISO 21496-1 binary
     /// metadata. The HDR reconstruction is preserved (verified: identical peak luminance).
     private func convertToISOGainMap(at url: URL) throws {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return }
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw ProcessingError.isoConversionFailed("[A] CGImageSourceCreateWithURL nil for \(url.lastPathComponent)")
+        }
 
         // The gain map Core Image just wrote, under the Apple HDRGainMap aux type.
         guard let rawAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
                     src, 0, kCGImageAuxiliaryDataTypeHDRGainMap),
               var auxDict = rawAux as? [String: Any] else {
-            // No gain map present (e.g. write produced none) — leave the file untouched.
-            return
+            // Enumerate other aux types so we can tell whether the gain map landed elsewhere.
+            let probes: [(String, CFString)] = [
+                ("ISO",     kCGImageAuxiliaryDataTypeISOGainMap),
+                ("Depth",   kCGImageAuxiliaryDataTypeDepth),
+                ("Portrait", kCGImageAuxiliaryDataTypePortraitEffectsMatte)
+            ]
+            let present = probes
+                .filter { CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, $0.1) != nil }
+                .map { $0.0 }
+            let presentStr = present.isEmpty ? "none" : present.joined(separator: ",")
+            throw ProcessingError.isoConversionFailed("[B] no HDRGainMap aux readable from just-written file \(url.lastPathComponent) (other aux present: \(presentStr))")
         }
 
         // Optionally subsample the gain map (Apple's native captures store it at half
@@ -346,7 +357,9 @@ class HDRProcessor {
             auxDict = smaller
         }
 
-        guard let base = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return }
+        guard let base = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+            throw ProcessingError.isoConversionFailed("[C] CGImageSourceCreateImageAtIndex nil for \(url.lastPathComponent)")
+        }
 
         let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
         let quality = (heicQuality > 0) ? heicQuality : 0.95
@@ -357,21 +370,37 @@ class HDRProcessor {
         imgProps[kCGImageDestinationLossyCompressionQuality as String] = quality
 
         let utType = CGImageSourceGetType(src) ?? ("public.heic" as CFString)
-        let tempURL = url.deletingLastPathComponent()
+        // Write the temp file inside the process temp directory (always on the boot volume),
+        // not in the user-chosen output folder. Observed: when the output folder is on an
+        // external volume, CGImageDestinationCreateWithURL here returned nil for the temp
+        // sibling path — likely because the NSSavePanel sandbox grant for `url` doesn't
+        // cover arbitrary sibling filenames on that volume. The user-chosen `url` itself
+        // DOES carry the grant, so we move the finished file back there at the end.
+        let tempURL = FileManager.default.temporaryDirectory
                          .appendingPathComponent(".__iso_tmp_\(UUID().uuidString).heic")
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        guard let dst = CGImageDestinationCreateWithURL(tempURL as CFURL, utType, 1, nil) else { return }
+        guard let dst = CGImageDestinationCreateWithURL(tempURL as CFURL, utType, 1, nil) else {
+            throw ProcessingError.isoConversionFailed("[D] CGImageDestinationCreateWithURL nil for temp \(tempURL.lastPathComponent), utType=\(utType)")
+        }
         CGImageDestinationAddImage(dst, base, imgProps as CFDictionary)
         CGImageDestinationAddAuxiliaryDataInfo(dst, kCGImageAuxiliaryDataTypeISOGainMap, auxDict as CFDictionary)
         guard CGImageDestinationFinalize(dst) else {
-            throw ProcessingError.gainMapGenerationFailed
+            throw ProcessingError.isoConversionFailed("[G] CGImageDestinationFinalize returned false")
         }
 
         if FileManager.default.fileExists(atPath: url.path) {
-            _ = try? FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+            do {
+                _ = try FileManager.default.replaceItemAt(url, withItemAt: tempURL)
+            } catch {
+                throw ProcessingError.isoConversionFailed("[E] replaceItemAt: \(error)")
+            }
         } else {
-            try? FileManager.default.moveItem(at: tempURL, to: url)
+            do {
+                try FileManager.default.moveItem(at: tempURL, to: url)
+            } catch {
+                throw ProcessingError.isoConversionFailed("[F] moveItem: \(error)")
+            }
         }
     }
     
