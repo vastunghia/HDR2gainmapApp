@@ -4,31 +4,31 @@ struct ThumbnailBar: View {
     let viewModel: MainViewModel
     
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: true) {
-            LazyHStack(spacing: 12) {
-                ForEach(viewModel.images) { image in
-                    ThumbnailCell(
-                        image: image,
-                        isSelected: viewModel.selectedImage?.id == image.id
-                    )
-                    .onTapGesture {
-                        // Force an immediate state update on the MainActor.
-                        Task { @MainActor in
-                            viewModel.isLoadingNewImage = true
-                            viewModel.hdrHistogram = nil
-                            viewModel.sdrHistogram = nil
-                            
-                            // Give SwiftUI a chance to render the loading state before heavy work starts.
-                            try? await Task.sleep(for: .milliseconds(1))
-                            
-                            // Now load the selected image (preview + histograms).
-                            await viewModel.selectImage(image)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: true) {
+                LazyHStack(spacing: 12) {
+                    ForEach(viewModel.images) { image in
+                        ThumbnailCell(
+                            image: image,
+                            isSelected: viewModel.selectedImage?.id == image.id,
+                            isCached: viewModel.warmImageIDs.contains(image.id)
+                        )
+                        .id(image.id)
+                        .onTapGesture {
+                            viewModel.userSelect(image)
                         }
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
+            // Keep the selected thumbnail visible (e.g. when navigating with arrow keys).
+            .onChange(of: viewModel.selectedImage?.id) { _, newID in
+                guard let newID else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(newID, anchor: .center)
+                }
+            }
         }
         .background(Color(nsColor: .controlBackgroundColor))
     }
@@ -39,7 +39,8 @@ struct ThumbnailBar: View {
 struct ThumbnailCell: View {
     let image: HDRImage
     let isSelected: Bool
-    
+    let isCached: Bool
+
     // Outer container: 120×80 for landscape/square, 80×120 for portrait.
     private func containerSize(for thumbnail: NSImage?) -> CGSize {
         guard let t = thumbnail else { return CGSize(width: 120, height: 80) }
@@ -83,6 +84,20 @@ struct ThumbnailCell: View {
                 RoundedRectangle(cornerRadius: 6)
                     .strokeBorder(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
             )
+            // "In memory" badge: this image will load quickly (no disk read).
+            .overlay(alignment: .topTrailing) {
+                if isCached {
+                    Image(systemName: "bolt.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.yellow)
+                        .padding(3)
+                        .background(Circle().fill(.black.opacity(0.55)))
+                        .padding(4)
+                        .transition(.opacity)
+                        .help("In memory — loads quickly")
+                }
+            }
+            .animation(.easeInOut(duration: 0.2), value: isCached)
             
             // Filename: keep the label width aligned with the outer container.
             Text(image.fileName)

@@ -3,7 +3,9 @@ import CoreImage
 
 /// Computes HDR and SDR histograms using a two-segment X axis.
 /// SDR (≤ reference white) follows an sRGB-shaped curve; HDR (> reference white) maps logarithmically in stops.
-class HistogramCalculator {
+/// `nonisolated` (pure CPU compute on raw bytes) so it can run on the off-main histogram path
+/// without hopping back to the main actor — see [[concurrency-model]].
+nonisolated class HistogramCalculator {
     
     // MARK: - Layout Constants (from the reference Python implementation)
     
@@ -132,8 +134,9 @@ class HistogramCalculator {
     
     // MARK: - Histogram Calculation
     
-    /// Histogram output (reference type for NSCache compatibility).
-    class HistogramResult {
+    /// Histogram output (reference type for NSCache compatibility). Immutable, so safe to build
+    /// off the main actor and share across threads/caches.
+    nonisolated final class HistogramResult: Sendable {
         let xCenters: [Float]        // X positions [0..1] of bin centers
         // let centersNit: [Float]      // Nit values corresponding to bin centers
         let redCounts: [Float]       // Smoothed counts for R

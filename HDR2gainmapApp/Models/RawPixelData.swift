@@ -1,7 +1,9 @@
 import CoreImage.CIFilterBuiltins
 
-/// Structure to cache raw raw pixel data among with required metadata
-class RawPixelData {
+/// Structure to cache raw raw pixel data among with required metadata.
+/// All stored properties are immutable (`let`), so it is safe to read from any thread and to
+/// hand between actors; `@unchecked Sendable` covers the non-Sendable `[String: Any]` field.
+nonisolated final class RawPixelData: @unchecked Sendable {
     let width: Int
     let height: Int
     let bitsPerComponent: Int

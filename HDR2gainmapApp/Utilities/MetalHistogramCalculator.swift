@@ -5,7 +5,9 @@ import CoreImage
 import Accelerate  // Optional: used for vImage conversions (experiments)
 
 /// Computes SDR/HDR histograms and peak luminance using Metal compute shaders.
-class MetalHistogramCalculator {
+/// Not actor-isolated: its public compute methods are serialized with an internal `NSLock`,
+/// so a single instance can be shared safely across the main actor and background tasks.
+nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
     
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -16,6 +18,10 @@ class MetalHistogramCalculator {
     // Reusable buffers
     private var edgesBuffer: MTLBuffer?
     private var histogramBuffers: [MTLBuffer] = []  // R, G, B, Y
+
+    // Serializes GPU work and the reusable buffers above so the calculator can be safely
+    // shared across threads (e.g. background prefetch + main-thread histogram generation).
+    private let lock = NSLock()
     
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -79,9 +85,11 @@ class MetalHistogramCalculator {
         context: CIContext,
         smoothWindow: Int = 11
     ) -> HistogramCalculator.HistogramResult? {
-        
+        lock.lock()
+        defer { lock.unlock() }
+
         // let startTime = CFAbsoluteTimeGetCurrent()
-        
+
         let width = Int(ciImage.extent.width)
         let height = Int(ciImage.extent.height)
         
@@ -217,7 +225,9 @@ class MetalHistogramCalculator {
         isBigEndian: Bool,
         smoothWindow: Int = 11
     ) -> HistogramCalculator.HistogramResult? {
-        
+        lock.lock()
+        defer { lock.unlock() }
+
         // print("   🔍 [calculateHistogramFromHDR] Starting...")
         
         guard bitsPerComponent == 16 else {
@@ -373,50 +383,38 @@ class MetalHistogramCalculator {
         // We convert RGB → RGBA by appending an alpha channel (65535).
         
         let pixelCount = width * height
-        var rgbaBytes = [UInt8]()
-        rgbaBytes.reserveCapacity(pixelCount * 4 * 2)  // 4 componenti × 2 bytes
-        
         let bytesPerPixel = componentsPerPixel * 2  // 16-bit = 2 bytes per component
-        
-        // print("🔍 Converting RGB → RGBA...")
-        // print("   Input: \(componentsPerPixel) components, Output: 4 components (RGBA)")
-        
-        for pixelIdx in 0..<pixelCount {
-            let srcOffset = pixelIdx * bytesPerPixel
-            
-            // Leggi R, G, B (16-bit each)
-            let r0 = bytes[srcOffset + 0]
-            let r1 = bytes[srcOffset + 1]
-            let g0 = bytes[srcOffset + 2]
-            let g1 = bytes[srcOffset + 3]
-            let b0 = bytes[srcOffset + 4]
-            let b1 = bytes[srcOffset + 5]
-            
-            // Scrivi R, G, B, A
-            if isBigEndian {
-                // Swap bytes for big-endian input.
-                rgbaBytes.append(r1)
-                rgbaBytes.append(r0)
-                rgbaBytes.append(g1)
-                rgbaBytes.append(g0)
-                rgbaBytes.append(b1)
-                rgbaBytes.append(b0)
-                rgbaBytes.append(0xFF)  // Alpha = 65535 (big-endian)
-                rgbaBytes.append(0xFF)
-            } else {
-                // Little-endian (native).
-                rgbaBytes.append(r0)
-                rgbaBytes.append(r1)
-                rgbaBytes.append(g0)
-                rgbaBytes.append(g1)
-                rgbaBytes.append(b0)
-                rgbaBytes.append(b1)
-                rgbaBytes.append(0xFF)  // Alpha = 65535 (little-endian)
-                rgbaBytes.append(0xFF)
+
+        // Convert RGB(A) → RGBA via direct indexed writes into a preallocated buffer.
+        // The previous implementation used ~8 `Array.append` per pixel (≈177M calls for a 22MP
+        // image), which dominated runtime (bounds/capacity checks + ARC on the buffer). Writing
+        // through `withUnsafeMutableBufferPointer` is byte-identical but ~10–20× faster.
+        // Alpha bytes default to 0xFF (→ 65535) by initializing the buffer to 0xFF.
+        let tConv = Prof.tic()
+        var rgbaBytes = [UInt8](repeating: 0xFF, count: pixelCount * 4 * 2)
+        bytes.withUnsafeBufferPointer { srcBuf in
+            rgbaBytes.withUnsafeMutableBufferPointer { dstBuf in
+                guard let src = srcBuf.baseAddress, let dst = dstBuf.baseAddress else { return }
+                if isBigEndian {
+                    for p in 0..<pixelCount {
+                        let s = p * bytesPerPixel, d = p * 8
+                        dst[d + 0] = src[s + 1]; dst[d + 1] = src[s + 0]  // R (byte-swapped)
+                        dst[d + 2] = src[s + 3]; dst[d + 3] = src[s + 2]  // G
+                        dst[d + 4] = src[s + 5]; dst[d + 5] = src[s + 4]  // B
+                        // dst[d+6], dst[d+7] (alpha) stay 0xFF
+                    }
+                } else {
+                    for p in 0..<pixelCount {
+                        let s = p * bytesPerPixel, d = p * 8
+                        dst[d + 0] = src[s + 0]; dst[d + 1] = src[s + 1]  // R
+                        dst[d + 2] = src[s + 2]; dst[d + 3] = src[s + 3]  // G
+                        dst[d + 4] = src[s + 4]; dst[d + 5] = src[s + 5]  // B
+                        // dst[d+6], dst[d+7] (alpha) stay 0xFF
+                    }
+                }
             }
         }
-        
-        // print("✅ Conversion complete: \(rgbaBytes.count) bytes")
+        Prof.toc("metal.rgbaConvert [\(width)×\(height)]", tConv)
         
         // Create an RGBA texture
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
@@ -573,7 +571,9 @@ class MetalHistogramCalculator {
         componentsPerPixel: Int,
         isBigEndian: Bool
     ) -> Float? {
-        
+        lock.lock()
+        defer { lock.unlock() }
+
         // print("   🔍 [calculatePeakLuminance] Starting...")
         // print("      Resolution: \(width)×\(height)")
         // print("      Bytes: \(bytes.count)")
@@ -584,8 +584,12 @@ class MetalHistogramCalculator {
             return nil
         }
         
-        // Validation: Ensure the input buffer is large enough.
-        let expectedBytes = width * height * 4 * 2  // RGBA 16-bit
+        // Validation: ensure the input buffer is large enough. The bytes are the source's native
+        // layout (componentsPerPixel × 16-bit) — typically RGB (3) for these PNGs, not RGBA. The
+        // previous check assumed 4 components, so every RGB image failed it and silently fell back
+        // to the ~10× slower CPU peak-luminance scan. (`createTextureFromRawBytes` already handles
+        // RGB input correctly by synthesizing the alpha channel.)
+        let expectedBytes = width * height * componentsPerPixel * 2
         guard bytes.count >= expectedBytes else {
             // print("   ❌ Not enough bytes: \(bytes.count) < \(expectedBytes)")
             return nil
@@ -594,6 +598,7 @@ class MetalHistogramCalculator {
 //        let startTime = CFAbsoluteTimeGetCurrent()
         
         // Create the texture
+        let tTex = Prof.tic()
         guard let texture = createTextureFromRawBytes(
             bytes: bytes,
             width: width,
@@ -605,7 +610,11 @@ class MetalHistogramCalculator {
             // print("   ❌ Failed to create Metal texture for peak calculation")
             return nil
         }
-        
+        Prof.toc("metalPeak.buildTexture [\(width)×\(height)]", tTex)
+
+        let tGPU = Prof.tic()
+        defer { Prof.toc("metalPeak.gpu [\(width)×\(height)]", tGPU) }
+
         // 2) Crea buffer per atomic max (1 uint)
         guard let maxBuffer = device.makeBuffer(
             length: MemoryLayout<UInt32>.size,

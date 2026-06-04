@@ -136,6 +136,11 @@ struct MainInterfaceView: View {
                     )
                 }
             }
+            // ←/→ navigate to the previous/next image (stops at the edges).
+            .arrowKeyNavigation(
+                onLeft:  { viewModel.advanceSelection(by: -1) },
+                onRight: { viewModel.advanceSelection(by: 1) }
+            )
         }
     }
 }

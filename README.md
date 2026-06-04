@@ -31,6 +31,9 @@ The resulting HEIC files work seamlessly (i.e. **the SDR or the HDR version of t
 - **Live HDR and SDR histograms** with split-axis layout (sRGB curve for SDR, logarithmic for HDR)
 - **Detailed clipping statistics** with interactive legend window
 - **Batch export** with progress tracking and possibility to append a string of your choice to all file names
+- **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view)
+- **Background pre-loading**: when you select an image, its neighbours (next and previous) are warmed in the background so sequential browsing feels near-instant — without slowing down work on the current image
+- **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are currently resident in memory (and will therefore load instantly); it updates live as images are cached and as older ones are evicted
 - **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software
 - **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×)
 - **Metadata preserved** in output files
@@ -205,6 +208,12 @@ The application implements multiple cache layers for performance:
 - **Preview cache**: Separate caches for base SDR and overlay variants
 - **Percentile CDF cache**: Pre-computed lookup tables for real-time slider response
 - **Metadata cache**: Image headers to avoid redundant disk I/O
+
+### Navigation & Pre-loading
+
+Selecting an image first switches the preview, then warms its neighbours (next and previous) in the background on a low-priority, cancellable task — so moving through a folder with the thumbnail bar or the ←/→ arrow keys is near-instant. The heavy work (image loading, tone-mapping, histograms) runs off the main thread, keeping the interface responsive.
+
+The ⚡️ badge on a thumbnail reflects whether that image's pixel data is currently held in the in-memory cache (raw bytes or loaded image), so you can see at a glance which images will open instantly. Because the caches are bounded, distant images are eventually evicted to free memory, and the badge disappears accordingly — a lightweight poll keeps the badges in sync in real time.
 
 ## License
 

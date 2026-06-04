@@ -12,6 +12,10 @@ class MainViewModel {
     
     // Loaded images
     var images: [HDRImage] = []
+
+    // IDs of images whose pixel data is currently resident in cache (drives the "bolt" thumbnail
+    // badge). Refreshed by a lightweight poll + after each selection.
+    private(set) var warmImageIDs: Set<UUID> = []
     
     // Currently selected image
     var selectedImage: HDRImage? {
@@ -61,6 +65,12 @@ class MainViewModel {
     private var refreshTask: Task<Void, Never>?
     private var histogramTask: Task<Void, Never>?
     private let refreshDebounceInterval: TimeInterval = 0.3
+
+    // Background pre-load of the images adjacent to the current selection.
+    private var prefetchTask: Task<Void, Never>?
+
+    // Periodic poll that keeps `warmImageIDs` in sync with the cache (catches evictions too).
+    private var cacheStatusTask: Task<Void, Never>?
     
     // Errors
     var errorMessage: String?
@@ -133,7 +143,10 @@ class MainViewModel {
             
             // Create HDRImage objects without triggering thumbnail generation yet.
             self.images = pngFiles.map { HDRImage(url: $0, loadThumbnailImmediately: false) }
-            
+
+            // Keep the thumbnail cache badges in sync from now on.
+            startCacheStatusPolling()
+
             // Auto-select the first image.
             if let firstImage = self.images.first {
                 await self.selectImage(firstImage)
@@ -167,44 +180,149 @@ class MainViewModel {
         // Note: the thumbnail list view may toggle the "new image" loading spinner and clear histograms immediately.
         // Here we switch selection, reset per-image state, generate the preview first, then compute histograms.
         
+        let tTotal = Prof.tic()
+        let file = image.url.lastPathComponent
+        defer { Prof.toc("selectImage TOTAL [\(file)]", tTotal) }
+
+        // A new selection takes priority over any in-flight background prefetch.
+        prefetchTask?.cancel()
+
         // Switch selection (triggers a headroom refresh via `didSet`).
         self.selectedImage = image
-        
+
         // Reset previous state
         self.previewError = nil
         self.currentPreview = nil
         self.clippingStats = nil
-        
+
         // Generate the preview first.
+        let tPrev = Prof.tic()
         await generatePreview(for: image, refreshHistograms: false)
-        
+        Prof.toc("selectImage.generatePreview [\(file)]", tPrev)
+
         // Hide the "new image" spinner after the preview is ready; histograms run afterwards.
         self.isLoadingNewImage = false
-        
+
         // Generate histograms afterwards (keeps the selection UI feeling snappy).
+        let tHist = Prof.tic()
         await generateHistograms()
-        
+        Prof.toc("selectImage.generateHistograms [\(file)]", tHist)
+
+        // Now that the foreground work is done, warm the neighbors in the background.
+        schedulePrefetch(around: image)
+
+        // Reflect the freshly-cached image (and any evictions) in the thumbnail badges.
+        refreshCacheStatus()
+
         // Debug: Print cache stats
         // processor.printCacheStats()
 
     }
-    
-    func refreshMeasuredHeadroom() {
+
+    // MARK: - Keyboard / sequential navigation
+
+    /// Selects an image the way a thumbnail tap does: show the loading state, clear histograms,
+    /// let SwiftUI render, then load. Shared by the thumbnail tap and the arrow-key navigation.
+    func userSelect(_ image: HDRImage) {
         Task { @MainActor in
-            guard let url = self.selectedImage?.url else { return }
-            
-            // Use getHeadroomForImage() (cached) instead of re-measuring headroom each time.
-            let raw = processor.getHeadroomForImage(url: url)
+            isLoadingNewImage = true
+            hdrHistogram = nil
+            sdrHistogram = nil
+
+            // Give SwiftUI a chance to render the loading state before heavy work starts.
+            try? await Task.sleep(for: .milliseconds(1))
+
+            await selectImage(image)
+        }
+    }
+
+    /// Moves the selection by `offset` positions in `images`, stopping at the edges (no wrap).
+    func advanceSelection(by offset: Int) {
+        guard let current = selectedImage,
+              let idx = images.firstIndex(where: { $0.id == current.id }) else { return }
+        let target = idx + offset
+        guard images.indices.contains(target) else { return }   // stop at the edges
+        userSelect(images[target])
+    }
+
+    // MARK: - Cache status (thumbnail "bolt" badge)
+
+    /// Recomputes which images are resident in cache and publishes the result only when it changes
+    /// (so stable state causes no thumbnail redraws).
+    func refreshCacheStatus() {
+        var warm = Set<UUID>()
+        for img in images where processor.isLoaded(url: img.url) {
+            warm.insert(img.id)
+        }
+        if warm != warmImageIDs {
+            warmImageIDs = warm
+        }
+    }
+
+    /// Starts a lightweight poll that keeps `warmImageIDs` current, including cache evictions.
+    private func startCacheStatusPolling() {
+        cacheStatusTask?.cancel()
+        cacheStatusTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.refreshCacheStatus()
+                try? await Task.sleep(for: .seconds(1.0))
+            }
+        }
+    }
+
+    /// Pre-warms the caches (raw bytes, headroom, percentile CDF, preview) for the images adjacent
+    /// to `image` — next first, then previous — on a low-priority, cancellable background task.
+    /// Lets sequential navigation through the thumbnail bar feel near-instant without slowing down
+    /// the user's work on the current image.
+    private func schedulePrefetch(around image: HDRImage) {
+        prefetchTask?.cancel()
+
+        guard let index = images.firstIndex(where: { $0.id == image.id }) else { return }
+
+        // Snapshot the neighbors' settings on the main actor into Sendable params.
+        var jobs: [HDRProcessor.PreviewParams] = []
+        if index + 1 < images.count {
+            let n = images[index + 1]
+            jobs.append(processor.previewParams(url: n.url, settings: n.settings))
+        }
+        if index - 1 >= 0 {
+            let p = images[index - 1]
+            jobs.append(processor.previewParams(url: p.url, settings: p.settings))
+        }
+        guard !jobs.isEmpty else { return }
+
+        prefetchTask = Task(priority: .utility) { [processor] in
+            for job in jobs {
+                if Task.isCancelled { return }
+                await processor.prewarm(params: job)
+            }
+        }
+    }
+
+    func refreshMeasuredHeadroom() {
+        guard let url = self.selectedImage?.url else { return }
+        let file = url.lastPathComponent
+        Task {
+            // Measure headroom off the main actor: on a cold cache this reads from disk and runs
+            // a Metal/CPU luminance scan, which must not block the UI.
+            let tHead = Prof.tic()
+            let raw = await Task.detached(priority: .userInitiated) { [processor] in
+                processor.getHeadroomForImage(url: url)
+            }.value
+            Prof.toc("refreshHeadroom.getHeadroom [\(file)]", tHead)
+
+            // Ignore if the selection changed while measuring.
+            guard self.selectedImage?.url == url else { return }
             self.measuredHeadroomRaw = raw
             self.measuredHeadroom = max(1.0, raw)
-            
-            // Warm up the percentile lookup table so the histogram headroom indicator can update in real time
-            // while the user drags the Percentile slider (preview generation is debounced).
-            Task {
-                let _ = await self.processor.prewarmPercentileCDF(url: url)
-                self.percentileHeadroomCacheGeneration &+= 1
-            }
-            
+
+            // Warm up the percentile lookup table so the histogram headroom indicator can update in
+            // real time while the user drags the Percentile slider (preview generation is debounced).
+            let tCDF = Prof.tic()
+            let _ = await self.processor.prewarmPercentileCDF(url: url)
+            Prof.toc("refreshHeadroom.prewarmCDF [\(file)]", tCDF)
+            guard self.selectedImage?.url == url else { return }
+            self.percentileHeadroomCacheGeneration &+= 1
         }
     }
     
@@ -379,31 +497,45 @@ class MainViewModel {
         
         self.isLoadingHistograms = true
         // print("   ⏳ isLoadingHistograms = true")
-        
+
+        // DIAGNOSTIC: measures how long the main-actor Task waits before its body starts running
+        // (i.e. main-actor scheduling latency), to explain the ~430 ms gap in the warm case.
+        let tEntry = Prof.tic()
+
         histogramTask = Task {
             // print("   🚀 Histogram task started")
-            
+            Prof.toc("genHist.taskStartLatency [\(image.url.lastPathComponent)]", tEntry)
+            let tBody = Prof.tic()
+            defer { Prof.toc("genHist.body [\(image.url.lastPathComponent)]", tBody) }
+
             do {
+                let file = image.url.lastPathComponent
                 // HDR histogram: can be cached after the first generation (the source image doesn't change).
                 // print("   → Calculating HDR histogram (may use cache)...")
+                let tHDR = Prof.tic()
                 let hdrHist = try await processor.histogramForHDRInput(url: image.url)
+                Prof.toc("hist.HDR [\(file)]", tHDR)
                 // print("   ✅ HDR histogram done: \(hdrHist.xCenters.count) bins")
-                
+
                 guard !Task.isCancelled else {
                     // print("   ❌ Task cancelled after HDR")
                     return
                 }
-                
+
                 // SDR histogram: recomputed because tone-mapping parameters may change.
+                // Snapshot the live settings on the main actor before the off-main compute.
                 // print("   → Calculating SDR histogram (always fresh, no cache)...")
-                let sdrHist = try await processor.histogramForSDROutput(image: image)
+                let sdrParams = processor.previewParams(url: image.url, settings: image.settings)
+                let tInter = Prof.tic()
+                let sdrHist = try await processor.histogramForSDROutput(params: sdrParams)
+                Prof.toc("hist.SDR [\(file)]", tInter)
                 // print("   ✅ SDR histogram done: \(sdrHist.xCenters.count) bins")
-                
+
                 guard !Task.isCancelled else {
                     // print("   ❌ Task cancelled after SDR")
                     return
                 }
-                
+
                 // Update both histograms together (single UI update).
                 // print("   → Updating UI with new histograms...")
                 self.hdrHistogram = hdrHist

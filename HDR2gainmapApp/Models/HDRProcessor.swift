@@ -7,59 +7,96 @@ import AppKit
 @MainActor
 class HDRProcessor {
     
-    private let hdrCache = NSCache<NSURL, CIImage>()
-    
+    // These caches are accessed from the off-main load/preview path as well as the main
+    // actor. NSCache is thread-safe, so the access is safe despite the `nonisolated(unsafe)`.
+    nonisolated(unsafe) private let hdrCache = NSCache<NSURL, CIImage>()
+
     // Short‑term preview cache (key = URL + settings fingerprint).
-    private let previewBaseCache = NSCache<NSString, CIImage>()
-    private let previewOverlayCache = NSCache<NSString, CIImage>()
-    private let previewCountsCache = NSCache<NSString, NSDictionary>() // ["c": Int, "t": Int]
+    nonisolated(unsafe) private let previewBaseCache = NSCache<NSString, CIImage>()
+    nonisolated(unsafe) private let previewOverlayCache = NSCache<NSString, CIImage>()
+    nonisolated(unsafe) private let previewCountsCache = NSCache<NSString, NSDictionary>() // ["c": Int, "t": Int]
     
-    private static var peakLuminanceCache = NSCache<NSURL, NSNumber>()
-    
+    nonisolated(unsafe) private static var peakLuminanceCache = NSCache<NSURL, NSNumber>()
+
     // Percentile-derived headroom lookup (built once per image, then reused for real-time UI updates).
-    private static let percentileCDFCache = NSCache<NSURL, PercentileCDFBox>()
+    nonisolated(unsafe) private static let percentileCDFCache = NSCache<NSURL, PercentileCDFBox>()
     
     // In-flight builders so multiple callers (UI + preview/export) don't duplicate work.
     private var percentileCDFInFlight: [NSURL: Task<PercentileCDFBox, Error>] = [:]
     
-    private func previewSettingsFingerprint(_ s: ProcessingSettings) -> String {
+    /// Sendable snapshot of the per-image settings needed by the preview pipeline. Captured on the
+    /// main actor so the heavy off-main render never reads the live `@Observable` settings (which
+    /// can mutate while the user drags a slider).
+    struct PreviewParams: Sendable {
+        let url: URL
+        let method: ProcessingSettings.SourceHeadroomMethod
+        let tonemapRatio: Float
+        let percentile: Float
+        let directSourceHeadroom: Float?
+        let targetHeadroom: Float?
+        let showClippedOverlay: Bool
+    }
+
+    /// Snapshots the live per-image settings on the main actor.
+    func previewParams(url: URL, settings: ProcessingSettings) -> PreviewParams {
+        PreviewParams(
+            url: url,
+            method: settings.sourceHeadroomMethod,
+            tonemapRatio: settings.tonemapRatio,
+            percentile: settings.percentile,
+            directSourceHeadroom: settings.directSourceHeadroom,
+            targetHeadroom: settings.targetHeadroom,
+            showClippedOverlay: settings.showClippedOverlay
+        )
+    }
+
+    nonisolated private func previewSettingsFingerprint(_ p: PreviewParams) -> String {
         // Include both source and target headroom in the fingerprint
-        let th = s.targetHeadroom ?? 1.0
-        
-        switch s.sourceHeadroomMethod {
+        let th = p.targetHeadroom ?? 1.0
+
+        switch p.method {
         case .peakMax:
-            return "m=peakMax;r=\(s.tonemapRatio);th=\(th)"
+            return "m=peakMax;r=\(p.tonemapRatio);th=\(th)"
         case .percentile:
-            return "m=percentile;p=\(s.percentile);th=\(th)"
+            return "m=percentile;p=\(p.percentile);th=\(th)"
         case .direct:
-            let sh = s.directSourceHeadroom ?? -1
+            let sh = p.directSourceHeadroom ?? -1
             return "m=direct;sh=\(sh);th=\(th)"
         }
     }
-    
-    private func previewKey(url: URL, settings: ProcessingSettings) -> NSString {
-        let k = url.absoluteString + "|" + previewSettingsFingerprint(settings)
+
+    nonisolated private func previewKey(_ p: PreviewParams) -> NSString {
+        let k = p.url.absoluteString + "|" + previewSettingsFingerprint(p)
         return NSString(string: k)
+    }
+
+    /// Convenience for callers that already hold live settings on the main actor.
+    func previewKey(url: URL, settings: ProcessingSettings) -> NSString {
+        previewKey(previewParams(url: url, settings: settings))
     }
     
     
     static let shared = HDRProcessor()
     
-    private let linear_p3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
-    private let p3_cs = CGColorSpace(name: CGColorSpace.displayP3)!
-    private let hdr_required = CGColorSpace.displayP3_PQ as String
-    
+    // Immutable Core Graphics / Core Image resources. CIContext is documented thread-safe
+    // and these color spaces are never mutated, so they are safe to use off the main actor.
+    nonisolated private let linear_p3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
+    nonisolated private let p3_cs = CGColorSpace(name: CGColorSpace.displayP3)!
+    nonisolated private let hdr_required = CGColorSpace.displayP3_PQ as String
+
     // Metal-backed histogram calculator (falls back to CPU when unavailable).
-    private let metalHistogram = MetalHistogramCalculator()
-    
-    private lazy var ctx_linear_p3: CIContext = {
-        CIContext(options: [.workingColorSpace: linear_p3,
-                            .outputColorSpace: linear_p3])
-    }()
-    
-    private lazy var encode_ctx = CIContext()
-    
+    // Internally serialized with an NSLock, so it is safe to call from background tasks.
+    nonisolated private let metalHistogram = MetalHistogramCalculator()
+
+    // Shared working context for loading/tone-mapping. A single context is reused across
+    // threads (CIContext is thread-safe). Initialized in `init` because it depends on `linear_p3`.
+    nonisolated private let ctx_linear_p3: CIContext
+
+    nonisolated private let encode_ctx = CIContext()
+
     private init() {
+        ctx_linear_p3 = CIContext(options: [.workingColorSpace: linear_p3,
+                                            .outputColorSpace: linear_p3])
         let totalRAM = ProcessInfo.processInfo.physicalMemory / (1024 * 1024 * 1024)
         let maxCacheSizeGB = min(max(Int(Double(totalRAM) * 0.12), 2), 8)  // Min 2GB, Max 8GB
         
@@ -90,9 +127,12 @@ class HDRProcessor {
         reportClipping: ((Int, Int, DetailedClippingStats?) -> Void)?
     ) async throws -> NSImage {
         
-        let baseKey = previewKey(url: image.url, settings: image.settings)
-        let wantOverlay = image.settings.showClippedOverlay
-        
+        // Snapshot the live settings on the main actor before any off-main work.
+        let params = previewParams(url: image.url, settings: image.settings)
+        let baseKey = previewKey(params)
+        let wantOverlay = params.showClippedOverlay
+        let file = params.url.lastPathComponent
+
         // 1) HIT overlay?
         if wantOverlay, let cachedOverlay = previewOverlayCache.object(forKey: baseKey) {
             if let ct = previewCountsCache.object(forKey: baseKey) as? [String: Int],
@@ -101,77 +141,146 @@ class HDRProcessor {
             } else {
                 reportClipping?(0, 0, nil)  // ✅ Added nil
             }
+            let t = Prof.tic()
+            defer { Prof.toc("preview overlayHit→NSImage [\(file)]", t) }
             return try ciImageToNSImage(cachedOverlay)
         }
 
         // 2) HIT base?
         if !wantOverlay, let cachedBase = previewBaseCache.object(forKey: baseKey) {
             reportClipping?(0, 0, nil)  // ✅ Added nil
+            let t = Prof.tic()
+            defer { Prof.toc("preview baseHit→NSImage [\(file)]", t) }
             return try ciImageToNSImage(cachedBase)
         }
-        
-        // 3) MISS → tonemap
-        let hdr = try loadHDR(url: image.url)
-        
+
+        // 3) MISS → render off the main actor (load + tone-map + overlay) so the UI stays
+        //    responsive; only the cache lookups above run on the main actor.
+        let t = Prof.tic()
+        let r = try await renderPreviewCore(params: params, baseKey: baseKey)
+        Prof.toc("preview MISS renderCore [\(file)]", t)
+        reportClipping?(r.clipped, r.total, r.detailed)
+        return r.image
+    }
+
+    /// Heavy preview rendering: loads the HDR image, tone-maps it, optionally builds the clipping
+    /// overlay, populates the preview caches, and returns the final image plus clipping counts.
+    /// `@concurrent` forces this onto the global executor (never the caller's actor), so it always
+    /// runs off the main thread even with `NonisolatedNonsendingByDefault` enabled.
+    @concurrent nonisolated private func renderPreviewCore(
+        params: PreviewParams,
+        baseKey: NSString
+    ) async throws -> (image: NSImage, clipped: Int, total: Int, detailed: DetailedClippingStats?) {
+
+        let file = params.url.lastPathComponent
+
+        // Cooperative cancellation: when a new selection supersedes a background prefetch, bail at
+        // stage boundaries instead of finishing a multi-second render that would contend for
+        // CPU/GPU (and the Metal lock) with the foreground work. The foreground render task is not
+        // cancelled, so these checks are no-ops for it.
+        try Task.checkCancellation()
+
+        let tLoad = Prof.tic()
+        let hdr = try loadHDR(url: params.url)
+        Prof.toc("renderCore.loadHDR [\(file)]", tLoad)
+
+        try Task.checkCancellation()
+
         // Compute headroom using the shared, consistent method.
-        // print("   🔍 [generatePreview] About to call getHeadroomForImage...")
-        let measuredHeadroom = getHeadroomForImage(url: image.url)
-        // print("   🔍 [generatePreview] getHeadroomForImage returned: \(measuredHeadroom)")
-        
+        let tHead = Prof.tic()
+        let measuredHeadroom = getHeadroomForImage(url: params.url)
+        Prof.toc("renderCore.headroom [\(file)]", tHead)
+
+        try Task.checkCancellation()
+
+        let tTone = Prof.tic()
         let sdrBase: CIImage
-        switch image.settings.sourceHeadroomMethod {
+        switch params.method {
         case .peakMax:
             // PeakMax: use the derived formula.
-            let derivedHeadroom = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, image.settings.tonemapRatio))
-            let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+            let derivedHeadroom = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, params.tonemapRatio))
+            let targetHeadroom = params.targetHeadroom ?? 1.0
             guard let s = tonemap_sdr(from: hdr, sourceHeadroom: derivedHeadroom, targetHeadroom: targetHeadroom) else {
                 throw ProcessingError.tonemapFailed
             }
             sdrBase = s
-            
+
         case .percentile:
             // Percentile: derive the source headroom from image content at the selected percentile.
-            let percentileHeadroom = try await percentileHeadroom(url: image.url, percentile: image.settings.percentile)
-            let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+            let percentileHeadroom = try await percentileHeadroom(url: params.url, percentile: params.percentile)
+            let targetHeadroom = params.targetHeadroom ?? 1.0
             guard let s = tonemap_sdr(from: hdr, sourceHeadroom: percentileHeadroom, targetHeadroom: targetHeadroom) else {
                 throw ProcessingError.tonemapFailed
             }
             sdrBase = s
-            
+
         case .direct:
             // Direct: use explicit user-provided values.
-            let sH = image.settings.directSourceHeadroom ?? measuredHeadroom
-            let tH = image.settings.targetHeadroom ?? 1.0
-            
+            let sH = params.directSourceHeadroom ?? measuredHeadroom
+            let tH = params.targetHeadroom ?? 1.0
+
             // Clamp to a reasonable range (0.1× to 2× the measured value).
             let maxLimit = max(1.0, measuredHeadroom * 2.0)
             let sH_clamped = min(max(sH, 0.1), maxLimit)
             let tH_clamped = min(max(tH, 0.1), maxLimit)
-            
+
             guard let s = tonemap_sdr(from: hdr, sourceHeadroom: sH_clamped, targetHeadroom: tH_clamped) else {
                 throw ProcessingError.tonemapFailed
             }
             sdrBase = s
         }
-        
+
+        // tonemap_sdr builds a lazy CIImage graph; its real cost materializes in the
+        // ciImageToNSImage render below. This measures graph construction only.
+        Prof.toc("renderCore.tonemapBuild [\(file)]", tTone)
+
         previewBaseCache.setObject(sdrBase, forKey: baseKey)
-        
-        // 4) If no overlay is needed, return.
-        if !wantOverlay {
-            reportClipping?(0, 0, nil)
-            return try ciImageToNSImage(sdrBase)
+
+        // No overlay needed → return the base preview.
+        if !params.showClippedOverlay {
+            let tRender = Prof.tic()
+            defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
+            return (try ciImageToNSImage(sdrBase), 0, 0, nil)
         }
-        
-        // 5) Overlay needed → build it from the base preview.
-        if let result = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3) {
+
+        // Overlay needed → build it from the base preview.
+        try Task.checkCancellation()
+        let tOverlay = Prof.tic()
+        let overlay = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3)
+        Prof.toc("renderCore.overlayBuild+count [\(file)]", tOverlay)
+        if let result = overlay {
             previewOverlayCache.setObject(result.imageWithOverlay, forKey: baseKey)
             previewCountsCache.setObject(["c": result.clipped, "t": result.total] as NSDictionary, forKey: baseKey)
-            reportClipping?(result.clipped, result.total, result.detailedStats)
-            return try ciImageToNSImage(result.imageWithOverlay)
+            let tRender = Prof.tic()
+            defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
+            return (try ciImageToNSImage(result.imageWithOverlay), result.clipped, result.total, result.detailedStats)
         } else {
-            reportClipping?(0, 0, nil)
-            return try ciImageToNSImage(sdrBase)
+            let tRender = Prof.tic()
+            defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
+            return (try ciImageToNSImage(sdrBase), 0, 0, nil)
         }
+    }
+
+    /// Warms the caches for `image` (raw bytes, headroom, percentile CDF, preview base/overlay)
+    /// entirely off the main actor, so a later selection of this image is near-instant.
+    /// Best-effort: returns silently on cancellation or failure.
+    nonisolated func prewarm(params: PreviewParams) async {
+        let baseKey = previewKey(params)
+
+        // Warm the preview (base/overlay) unless already cached for these settings.
+        let previewWarm = params.showClippedOverlay
+            ? previewOverlayCache.object(forKey: baseKey) != nil
+            : previewBaseCache.object(forKey: baseKey) != nil
+        if !previewWarm {
+            if Task.isCancelled { return }
+            _ = try? await renderPreviewCore(params: params, baseKey: baseKey)
+        }
+
+        // Warm the HDR-input histogram too: it depends only on the source image (not the
+        // tone-map settings), and the foreground selection otherwise recomputes it (~320 ms)
+        // on every navigation. Caching it here makes that a hit.
+        if Task.isCancelled { return }
+        _ = try? await histogramForHDRInput(url: params.url)
     }
     
     /// Exports a single image as HEIC with gain map
@@ -589,16 +698,21 @@ class HDRProcessor {
             }
         }
         
-        // Ensure raw bytes are already cached (loadHDR is called by preview/histograms, and headroom measurement also warms it).
+        // Ensure raw bytes are available and headroom is measured. This may touch the disk or
+        // run a Metal scan on a cold cache, so do it off the main actor.
         let rawData: RawPixelData
+        let peakHeadroom: Float
         do {
-            rawData = try getRawPixelData(url: url)
+            let prep = try await Task.detached(priority: .utility) { [self] () -> (RawPixelData, Float) in
+                let data = try getRawPixelData(url: url)
+                let head = getHeadroomForImage(url: url)
+                return (data, head)
+            }.value
+            rawData = prep.0
+            peakHeadroom = prep.1
         } catch {
             return false
         }
-        
-        // Use the cached peak luminance (computed via Metal when available) to normalize the CDF.
-        let peakHeadroom = getHeadroomForImage(url: url)
         let peakNits = max(0.001, peakHeadroom * Constants.referenceHDRwhiteNit)
         
         let bytes = rawData.bytes
@@ -732,8 +846,7 @@ class HDRProcessor {
     
     /// Computes raw headroom (no cache; prefer getHeadroomForImage() instead).
     /// Use Metal for a 10–100× speedup (when available).
-    @MainActor
-    func computeMeasuredHeadroomRaw(url: URL) throws -> Float {
+    nonisolated func computeMeasuredHeadroomRaw(url: URL) throws -> Float {
         
         // print("🔍 [computeMeasuredHeadroomRaw] Called for: \(url.lastPathComponent)")
         
@@ -744,7 +857,7 @@ class HDRProcessor {
         
         // Try Metal first.
         let peakNits: Float
-        
+
         if let metalCalc = metalHistogram,
            let metalPeak = metalCalc.calculatePeakLuminance(
             fromBytes: rawData.bytes,
@@ -775,32 +888,31 @@ class HDRProcessor {
     }
     
     /// Helper: compute headroom from a URL with caching.
-    @MainActor
-    func getHeadroomForImage(url: URL) -> Float {
+    nonisolated func getHeadroomForImage(url: URL) -> Float {
         let key = url as NSURL
-        
+
         // Cache hit?
         if let cached = Self.peakLuminanceCache.object(forKey: key) {
 //            print("📦 [Headroom] Cache HIT: \(url.lastPathComponent) = \(cached.floatValue)")
             return cached.floatValue
         }
-        
+
         // print("⚠️  [Headroom] Cache MISS: \(url.lastPathComponent)")
-        
+
         // print("   ❌ Peak luminance cache MISS, calculating...")
-        
+
         do {
             let headroom = try computeMeasuredHeadroomRaw(url: url)
-            
+
             if headroom <= 1.0 {
                 // print("❌ [Headroom] WARNING: Computed headroom = \(headroom) ≤ 1.0!")
             } else {
                 // print("✅ [Headroom] Computed headroom = \(headroom)")
             }
-            
+
             Self.peakLuminanceCache.setObject(NSNumber(value: headroom), forKey: key)
             // print("    Cached headroom for: \(url.lastPathComponent)")
-            
+
             return headroom
         } catch {
             // print("❌ [Headroom] Computation FAILED: \(error)")
@@ -809,7 +921,7 @@ class HDRProcessor {
     }
     
     /// Computes absolute peak luminance (nits) from raw pixel data.
-    private func calculatePeakLuminanceNits(
+    nonisolated private func calculatePeakLuminanceNits(
         fromBytes bytes: [UInt8],
         width: Int,
         height: Int,
@@ -897,7 +1009,7 @@ class HDRProcessor {
     // MARK: - Overlay + count
     
     // Struct to hold detailed clipping statistics
-    struct DetailedClippingStats {
+    nonisolated struct DetailedClippingStats: Sendable {
         let total: Int
         
         // Single channel clipping (bright: Y < 1)
@@ -937,7 +1049,7 @@ class HDRProcessor {
     /// - yellow/magenta/cyan: 2 channels clipped.
     /// - **dim** (half intensity) for the above cases when **Y ≥ 1** but not full RGB clipping.
     /// - **black** when **all three** channels are clipped (R&G&B > 1).
-    func addColorizedClippingOverlayAndCount(
+    nonisolated func addColorizedClippingOverlayAndCount(
         sdr: CIImage,
         context: CIContext
     ) -> (imageWithOverlay: CIImage, clipped: Int, total: Int, detailedStats: DetailedClippingStats)? {
@@ -1135,7 +1247,7 @@ class HDRProcessor {
     }
     
     
-    private func clippedCountViaAreaAverage(binaryMaskR: CIImage, context: CIContext) -> (Int, Int) {
+    nonisolated private func clippedCountViaAreaAverage(binaryMaskR: CIImage, context: CIContext) -> (Int, Int) {
         let w = Int(binaryMaskR.extent.width), h = Int(binaryMaskR.extent.height)
         guard w > 0, h > 0 else { return (0, 0) }
         
@@ -1156,7 +1268,7 @@ class HDRProcessor {
         return (clipped, total)
     }
     
-    private func ciImageToNSImage(_ ciImage: CIImage) throws -> NSImage {
+    nonisolated private func ciImageToNSImage(_ ciImage: CIImage) throws -> NSImage {
         guard let cgImage = encode_ctx.createCGImage(ciImage, from: ciImage.extent) else {
             throw ProcessingError.imageConversionFailed
         }
@@ -1166,64 +1278,44 @@ class HDRProcessor {
     
     /// Computes the histogram for the SDR output (no caching; always recomputed).
     /// Important: use the BASE preview without the clipping overlay.
-    func histogramForSDROutput(image: HDRImage) async throws -> HistogramCalculator.HistogramResult {
-        
-        // print("🔍 [SDR Histogram] Requested for: \(image.url.lastPathComponent)")
-        // print("   Method: \(image.settings.method)")
-        // print("   ⚡ NO CACHE - always regenerating")
-        
+    /// `@concurrent` so the Metal compute + full-res readback runs off the main thread.
+    @concurrent nonisolated func histogramForSDROutput(params: PreviewParams) async throws -> HistogramCalculator.HistogramResult {
+
         // Note: generatePreview() may return an image *with* a clipping overlay.
         // Approach: access the BASE preview cache directly.
-        
-        let baseKey = previewKey(url: image.url, settings: image.settings)
-        
-        // print("   → Checking preview base cache with key: \(baseKey)")
-        
-        // Try to fetch the base preview from cache.
-        if let cachedBase = previewBaseCache.object(forKey: baseKey) {
-            // print("   ✅ Found cached base preview (without overlay)")
-            
-            // Converti CIImage → NSImage
-            guard let cgImage = encode_ctx.createCGImage(cachedBase, from: cachedBase.extent) else {
-                // print("   ❌ Failed to create CGImage from cached CIImage")
+
+        let file = params.url.lastPathComponent
+        let baseKey = previewKey(params)
+
+        // Fetch the base preview from cache; on a miss, render it (populates previewBaseCache).
+        let cachedBase: CIImage
+        if let hit = previewBaseCache.object(forKey: baseKey) {
+            cachedBase = hit
+        } else {
+            // Render off-main to populate the base cache, then read it back.
+            _ = try await renderPreviewCore(params: params, baseKey: baseKey)
+            guard let rendered = previewBaseCache.object(forKey: baseKey) else {
                 throw ProcessingError.imageConversionFailed
             }
-            let sdrImage = NSImage(cgImage: cgImage, size: NSSize(width: cachedBase.extent.width, height: cachedBase.extent.height))
-            
-            return try await calculateHistogramFromSDRImage(sdrImage, ciImage: cachedBase)
+            cachedBase = rendered
         }
-        
-        // Cache miss: generate a full preview (this populates previewBaseCache).
-        // print("   ⚠️ Base preview not in cache, generating...")
-        let sdrImage = try await generatePreview(for: image)
-        
-        // The base preview should now be cached; try again.
-        if let cachedBase = previewBaseCache.object(forKey: baseKey) {
-            // print("   ✅ Base preview now cached after generation")
-            
-            guard let cgImage = encode_ctx.createCGImage(cachedBase, from: cachedBase.extent) else {
-                throw ProcessingError.imageConversionFailed
-            }
-            let baseImage = NSImage(cgImage: cgImage, size: NSSize(width: cachedBase.extent.width, height: cachedBase.extent.height))
-            
-            return try await calculateHistogramFromSDRImage(baseImage, ciImage: cachedBase)
-        }
-        
-        // Fallback: use the generated image (may include overlay, but better than nothing).
-        // print("   ⚠️ Using generated image (may include overlay if enabled)")
-        
-        // We need a CIImage for the Metal path (convert from NSImage).
-        guard let cgImage = sdrImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+
+        // CIImage → CGImage (materializes the tone-map at full res).
+        let tCG = Prof.tic()
+        guard let cgImage = encode_ctx.createCGImage(cachedBase, from: cachedBase.extent) else {
             throw ProcessingError.imageConversionFailed
         }
-        let ciImage = CIImage(cgImage: cgImage)
-        
-        return try await calculateHistogramFromSDRImage(sdrImage, ciImage: ciImage)
+        Prof.toc("histSDR.createCGImage [\(file)]", tCG)
+        let sdrImage = NSImage(cgImage: cgImage, size: NSSize(width: cachedBase.extent.width, height: cachedBase.extent.height))
+
+        let tMetal = Prof.tic()
+        defer { Prof.toc("histSDR.metalHist [\(file)]", tMetal) }
+        return try await calculateHistogramFromSDRImage(sdrImage, ciImage: cachedBase)
     }
-    
+
     /// Helper: compute histogram from an SDR NSImage.
     /// Use Metal when available; otherwise fall back to CPU.
-    private func calculateHistogramFromSDRImage(
+    nonisolated private func calculateHistogramFromSDRImage(
         _ sdrImage: NSImage,
         ciImage: CIImage? = nil
     ) async throws -> HistogramCalculator.HistogramResult {
@@ -1278,22 +1370,29 @@ class HDRProcessor {
     // MARK: - Raw Data Structures
     
     /// Separate cache for raw pixel data (used for histograms).
-    private static let rawDataCache = NSCache<NSURL, RawPixelData>()
+    nonisolated(unsafe) private static let rawDataCache = NSCache<NSURL, RawPixelData>()
     
     // MARK: - Public Cache Access
     
     /// Expose the raw-data cache for HDRImage.
     /// Allows HDRImage.loadMetadata() to reuse already-loaded data.
-    func getCachedRawPixelData(url: URL) -> RawPixelData? {
+    nonisolated func getCachedRawPixelData(url: URL) -> RawPixelData? {
         let key = url as NSURL
         return Self.rawDataCache.object(forKey: key)
+    }
+
+    /// Whether the image's pixel data is currently resident in memory (raw bytes or linear CIImage).
+    /// Used by the UI to flag thumbnails that will load quickly (no disk read).
+    nonisolated func isLoaded(url: URL) -> Bool {
+        let key = url as NSURL
+        return Self.rawDataCache.object(forKey: key) != nil || hdrCache.object(forKey: key) != nil
     }
     
     // MARK: - HDR Loading with Raw Data Cache
     
     /// Load HDR once: read raw bytes from disk only once, then cache both the bytes and the CIImage.
     /// Throws ProcessingError.invalidColorSpace if the file isn't the expected HDR CS.
-    private func loadHDR(url: URL) throws -> CIImage {
+    nonisolated private func loadHDR(url: URL) throws -> CIImage {
         let key = url as NSURL
         
         // CIImage cache hit?
@@ -1392,7 +1491,7 @@ class HDRProcessor {
     }
     
     /// Helper: create a linear Display P3 CIImage from already-loaded RawPixelData.
-    private func createCIImageFromRawData(_ rawData: RawPixelData, key: NSURL) throws -> CIImage {
+    nonisolated private func createCIImageFromRawData(_ rawData: RawPixelData, key: NSURL) throws -> CIImage {
         // Create a CIImage from the CGImage with HDR expansion.
         let fileCI = CIImage(cgImage: rawData.cgImage, options: [CIImageOption.expandToHDR: true])
         
@@ -1425,7 +1524,7 @@ class HDRProcessor {
     // MARK: - Histogram Generation
     
     /// Fetch raw pixel data from cache (for histogram calculation).
-    private func getRawPixelData(url: URL) throws -> RawPixelData {
+    nonisolated private func getRawPixelData(url: URL) throws -> RawPixelData {
         let key = url as NSURL
         
         // Cache hit?
@@ -1450,17 +1549,21 @@ class HDRProcessor {
     
     /// Computes histogram for the HDR input (with caching).
     /// Use Metal for a 10–50× speedup (when available).
-    func histogramForHDRInput(url: URL) async throws -> HistogramCalculator.HistogramResult {
+    @concurrent nonisolated func histogramForHDRInput(url: URL) async throws -> HistogramCalculator.HistogramResult {
         
         let cacheKey = NSString(string: "\(url.absoluteString)|hdr")
-        
+        let file = url.lastPathComponent
+
         // print("📊 [histogramForHDRInput] Called for: \(url.lastPathComponent)")
-        
+
         // Cache hit?
         if let cached = Self.HistogramCache.object(forKey: cacheKey) {
             // print("   ⚡ Cache HIT")
             return cached
         }
+
+        let tHDR = Prof.tic()
+        defer { Prof.toc("histHDR.compute(miss) [\(file)]", tHDR) }
         
         // print("   ❌ Cache MISS - calculating...")
         
@@ -1536,7 +1639,7 @@ class HDRProcessor {
         return histogram
     }
     
-    // Histogram cache.
-    private static let HistogramCache = NSCache<NSString, HistogramCalculator.HistogramResult>()
+    // Histogram cache. Thread-safe NSCache, accessed from the off-main histogram path.
+    nonisolated(unsafe) private static let HistogramCache = NSCache<NSString, HistogramCalculator.HistogramResult>()
     
 }
