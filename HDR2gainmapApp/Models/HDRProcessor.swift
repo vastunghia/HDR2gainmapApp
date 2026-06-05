@@ -15,7 +15,10 @@ class HDRProcessor {
     nonisolated(unsafe) private let previewBaseCache = NSCache<NSString, CIImage>()
     nonisolated(unsafe) private let previewOverlayCache = NSCache<NSString, CIImage>()
     nonisolated(unsafe) private let previewCountsCache = NSCache<NSString, NSDictionary>() // ["c": Int, "t": Int]
-    
+    // Detailed clipping stats, cached per settings key so they survive preview cache hits and are
+    // available regardless of the `showClippedOverlay` toggle (the key excludes the overlay flag).
+    nonisolated(unsafe) private let previewDetailedCache = NSCache<NSString, DetailedStatsBox>()
+
     nonisolated(unsafe) private static var peakLuminanceCache = NSCache<NSURL, NSNumber>()
 
     // Percentile-derived headroom lookup (built once per image, then reused for real-time UI updates).
@@ -111,6 +114,7 @@ class HDRProcessor {
         previewBaseCache.countLimit = 32
         previewOverlayCache.countLimit = 32
         previewCountsCache.countLimit = 64
+        previewDetailedCache.countLimit = 64
     }
     
     // MARK: - Public API
@@ -133,13 +137,16 @@ class HDRProcessor {
         let wantOverlay = params.showClippedOverlay
         let file = params.url.lastPathComponent
 
+        // Cached clipping stats for this settings key (available regardless of the overlay flag).
+        let cachedDetailed = previewDetailedCache.object(forKey: baseKey)?.stats
+        let cachedCounts = previewCountsCache.object(forKey: baseKey) as? [String: Int]
+
         // 1) HIT overlay?
         if wantOverlay, let cachedOverlay = previewOverlayCache.object(forKey: baseKey) {
-            if let ct = previewCountsCache.object(forKey: baseKey) as? [String: Int],
-               let c = ct["c"], let t = ct["t"] {
-                reportClipping?(c, t, nil)  // ✅ Added nil for detailedStats
+            if let c = cachedCounts?["c"], let t = cachedCounts?["t"] {
+                reportClipping?(c, t, cachedDetailed)
             } else {
-                reportClipping?(0, 0, nil)  // ✅ Added nil
+                reportClipping?(0, 0, cachedDetailed)
             }
             let t = Prof.tic()
             defer { Prof.toc("preview overlayHit→NSImage [\(file)]", t) }
@@ -148,7 +155,11 @@ class HDRProcessor {
 
         // 2) HIT base?
         if !wantOverlay, let cachedBase = previewBaseCache.object(forKey: baseKey) {
-            reportClipping?(0, 0, nil)  // ✅ Added nil
+            if let c = cachedCounts?["c"], let t = cachedCounts?["t"] {
+                reportClipping?(c, t, cachedDetailed)
+            } else {
+                reportClipping?(0, 0, cachedDetailed)
+            }
             let t = Prof.tic()
             defer { Prof.toc("preview baseHit→NSImage [\(file)]", t) }
             return try ciImageToNSImage(cachedBase)
@@ -236,28 +247,32 @@ class HDRProcessor {
 
         previewBaseCache.setObject(sdrBase, forKey: baseKey)
 
-        // No overlay needed → return the base preview.
-        if !params.showClippedOverlay {
-            let tRender = Prof.tic()
-            defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
-            return (try ciImageToNSImage(sdrBase), 0, 0, nil)
-        }
-
-        // Overlay needed → build it from the base preview.
+        // Always compute the clipping stats (counting renders; the overlay image is built lazily
+        // and only rendered below when the toggle is on). This keeps the legend & stats available
+        // regardless of `showClippedOverlay`, and the result is cached per settings key.
         try Task.checkCancellation()
         let tOverlay = Prof.tic()
         let overlay = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3)
         Prof.toc("renderCore.overlayBuild+count [\(file)]", tOverlay)
-        if let result = overlay {
+
+        let clipped = overlay?.clipped ?? 0
+        let total = overlay?.total ?? 0
+        let detailed = overlay?.detailedStats
+        if let detailed {
+            previewDetailedCache.setObject(DetailedStatsBox(detailed), forKey: baseKey)
+            previewCountsCache.setObject(["c": clipped, "t": total] as NSDictionary, forKey: baseKey)
+        }
+
+        // Overlay shown → render the composited image (and cache it); otherwise render the base.
+        if params.showClippedOverlay, let result = overlay {
             previewOverlayCache.setObject(result.imageWithOverlay, forKey: baseKey)
-            previewCountsCache.setObject(["c": result.clipped, "t": result.total] as NSDictionary, forKey: baseKey)
             let tRender = Prof.tic()
             defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
-            return (try ciImageToNSImage(result.imageWithOverlay), result.clipped, result.total, result.detailedStats)
+            return (try ciImageToNSImage(result.imageWithOverlay), clipped, total, detailed)
         } else {
             let tRender = Prof.tic()
             defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
-            return (try ciImageToNSImage(sdrBase), 0, 0, nil)
+            return (try ciImageToNSImage(sdrBase), clipped, total, detailed)
         }
     }
 
@@ -1008,6 +1023,12 @@ class HDRProcessor {
     
     // MARK: - Overlay + count
     
+    // Reference-type box so DetailedClippingStats (a struct) can be stored in NSCache.
+    nonisolated final class DetailedStatsBox {
+        let stats: DetailedClippingStats
+        init(_ stats: DetailedClippingStats) { self.stats = stats }
+    }
+
     // Struct to hold detailed clipping statistics
     nonisolated struct DetailedClippingStats: Sendable {
         let total: Int

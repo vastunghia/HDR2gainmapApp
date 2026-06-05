@@ -64,6 +64,7 @@ class MainViewModel {
     var hdrHistogram: HistogramCalculator.HistogramResult?
     var sdrHistogram: HistogramCalculator.HistogramResult?
     var isLoadingHistograms = false
+
     
     // Separate debouncing for preview and histograms
     private var refreshTask: Task<Void, Never>?
@@ -398,7 +399,8 @@ class MainViewModel {
         self.previewError = nil
         self.currentPreview = nil
         self.clippingStats = nil
-        
+        self.detailedClippingStats = nil
+
         do {
             // print("   → Generating preview from processor...")
             let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total, detailedStats in

@@ -7,32 +7,38 @@ class ClippingLegendWindowController: NSWindowController {
     // private var viewModel: MainViewModel?
     
     convenience init(viewModel: MainViewModel) {
+        // Default size large enough to show the whole legend + stats without resizing,
+        // capped to the available screen height so it never spills off-screen.
+        let screen = NSApp.mainWindow?.screen ?? NSScreen.main
+        let availableHeight = (screen?.visibleFrame.height ?? 1000) - 40
+        let defaultHeight: CGFloat = min(960, availableHeight)
+
         // Create the window
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 400, height: 600),
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: defaultHeight),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
-        
+
         window.title = "Clipping Legend & Statistics"
         window.isReleasedWhenClosed = false
-        
+
         // Make it float above other windows
         window.level = .floating
-        
+
         // Allow interaction with windows below
         window.hidesOnDeactivate = false
-        
+
         // Set minimum size
-        window.minSize = NSSize(width: 350, height: 500)
-        
+        window.minSize = NSSize(width: 350, height: 560)
+
         // Position near the main window
         if let mainWindow = NSApp.mainWindow {
             let mainFrame = mainWindow.frame
             let newOrigin = NSPoint(
                 x: mainFrame.maxX + 20,
-                y: mainFrame.maxY - 600
+                y: mainFrame.maxY - defaultHeight
             )
             window.setFrameOrigin(newOrigin)
         } else {
@@ -75,14 +81,15 @@ struct ClippingLegendContentView: View {
                             Text("Additive Color Model (RGB)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-                            
+
                             // RGB diagram with fixed aspect ratio
-                            RGBDiagramView()
+                            RGBDiagramView(stats: stats)
                                 .aspectRatio(1.0, contentMode: .fit)
                                 .frame(maxWidth: 300)
                                 .background(Color.black)
                                 .cornerRadius(8)
                         }
+                        .frame(maxWidth: .infinity)   // center the diagram block
                         .padding(.top)  // Add top padding since we removed the header
                         
                         Divider()
@@ -170,9 +177,9 @@ struct ClippingLegendContentView: View {
                             
                             // ✅ All channels (aligned to second column)
                             HStack(spacing: 12) {
-                                // Color swatch (black to show it's the "white" overlay)
+                                // Color swatch (white = R+G+B fully clipped)
                                 RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color.black)
+                                    .fill(Color.white)
                                     .frame(width: 24, height: 24)
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 4)
@@ -315,13 +322,22 @@ struct TwoColumnStatRow: View {
 }
 
 
-/// Simple RGB diagram drawn with SwiftUI using Canvas
+/// Simple RGB diagram drawn with SwiftUI using Canvas. Each region is labelled with the share of
+/// clipped pixels in that channel/combination (bright + luma-clipped summed).
 struct RGBDiagramView: View {
+    let stats: HDRProcessor.DetailedClippingStats
+
+    /// Formats `count` as a percentage of the total pixel count.
+    private func pct(_ count: Int) -> String {
+        guard stats.total > 0 else { return "0%" }
+        return formatPercentTwoSig(Double(count) / Double(stats.total) * 100)
+    }
+
     var body: some View {
         Canvas { context, size in
             let center = CGPoint(x: size.width / 2, y: size.height / 2)
             let radius = min(size.width, size.height) / 4.0
-            
+
             // Helper to draw a circle with blend mode
             func drawCircle(at offset: CGSize, color: Color) {
                 var path = Path()
@@ -331,70 +347,66 @@ struct RGBDiagramView: View {
                     width: radius * 2,
                     height: radius * 2
                 ))
-                
+
                 context.fill(path, with: .color(color))
             }
-            
+
             // Enable blend mode for additive color mixing
             context.blendMode = .plusLighter
-            
+
             // Red circle (top)
             drawCircle(at: CGSize(width: 0, height: -radius * 0.5), color: .red)
-            
+
             // Green circle (bottom-left)
             drawCircle(at: CGSize(width: -radius * 0.7 * sqrt(3.0)/2.0, height: radius * 0.7 * 0.5), color: .green)
-            
+
             // Blue circle (bottom-right)
             drawCircle(at: CGSize(width: radius * 0.7 * sqrt(3.0)/2.0, height: radius * 0.7 * 0.5), color: .blue)
-            
+
             // Reset blend mode for labels
             context.blendMode = .normal
-            
+
             // Label fonts
-            let primaryLabelFont = Font.title2.weight(.bold)
-            let secondaryLabelFont = Font.title3.weight(.semibold)
-            
-            // Primary color labels (R, G, B) - outside circles
-            // R label (top)
+            let primaryLabelFont = Font.system(size: 12, weight: .bold)
+            let secondaryLabelFont = Font.system(size: 11, weight: .semibold)
+
+            // Single-channel % (in the pure lobes, white text on the dark background).
+            // R (top)
             context.draw(
-                Text("R").font(primaryLabelFont).foregroundColor(.white),
-                at: CGPoint(x: center.x, y: center.y - radius * 1.4)
+                Text(pct(stats.redOnly + stats.redDim)).font(primaryLabelFont).foregroundColor(.white),
+                at: CGPoint(x: center.x, y: center.y - radius * 1.2)
             )
-            
-            // G label (bottom-left)
+            // G (bottom-left)
             context.draw(
-                Text("G").font(primaryLabelFont).foregroundColor(.white),
-                at: CGPoint(x: center.x - radius * 1.3, y: center.y + radius * 0.9)
+                Text(pct(stats.greenOnly + stats.greenDim)).font(primaryLabelFont).foregroundColor(.white),
+                at: CGPoint(x: center.x - radius * 1.1, y: center.y + radius * 0.77)
             )
-            
-            // B label (bottom-right)
+            // B (bottom-right)
             context.draw(
-                Text("B").font(primaryLabelFont).foregroundColor(.white),
-                at: CGPoint(x: center.x + radius * 1.3, y: center.y + radius * 0.9)
+                Text(pct(stats.blueOnly + stats.blueDim)).font(primaryLabelFont).foregroundColor(.white),
+                at: CGPoint(x: center.x + radius * 1.1, y: center.y + radius * 0.77)
             )
-            
-            // Secondary color labels (Y, M, C) - in overlap areas
-            // Y label (R+G overlap, top-left)
+
+            // Two-channel % (in overlap areas, black text).
+            // Y = R+G (top-left)
             context.draw(
-                Text("Y").font(secondaryLabelFont).foregroundColor(.black),
+                Text(pct(stats.yellowBright + stats.yellowDim)).font(secondaryLabelFont).foregroundColor(.black),
                 at: CGPoint(x: center.x - radius * 0.5, y: center.y - radius * 0.4)
             )
-            
-            // M label (R+B overlap, top-right)
+            // M = R+B (top-right)
             context.draw(
-                Text("M").font(secondaryLabelFont).foregroundColor(.black),
+                Text(pct(stats.magentaBright + stats.magentaDim)).font(secondaryLabelFont).foregroundColor(.black),
                 at: CGPoint(x: center.x + radius * 0.5, y: center.y - radius * 0.4)
             )
-            
-            // C label (G+B overlap, bottom)
+            // C = G+B (bottom)
             context.draw(
-                Text("C").font(secondaryLabelFont).foregroundColor(.black),
+                Text(pct(stats.cyanBright + stats.cyanDim)).font(secondaryLabelFont).foregroundColor(.black),
                 at: CGPoint(x: center.x, y: center.y + radius * 0.6)
             )
-            
-            // W label (center - all three overlap)
+
+            // Triple overlap % (center, black text).
             context.draw(
-                Text("W").font(secondaryLabelFont).foregroundColor(.black),
+                Text(pct(stats.white)).font(secondaryLabelFont).foregroundColor(.black),
                 at: center
             )
         }

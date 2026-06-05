@@ -633,25 +633,6 @@ struct ExportSection: View {
                 .disabled(viewModel.isExporting)
                 .help("Load a previously saved tone-mapping settings profile")
             }
-
-            Text("Exports HEIC with embedded gain map and Maker Apple metadata")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            if let selectedImage = viewModel.selectedImage {
-                let filename = FilenameHelper.generateFilename(
-                    baseName: selectedImage.fileName,
-                    suffix: selectedImage.settings.filenameSuffix,
-                    extension: "heic"
-                )
-                Text("Exported filename will be \(filename)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Text("Exported filename will be <n/a>)")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .disabled(true)
-            }
         }
         .padding(.horizontal)
     }

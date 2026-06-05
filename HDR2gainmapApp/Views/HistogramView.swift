@@ -10,17 +10,7 @@ enum HistogramMode {
 struct HistogramView: View {
     let viewModel: MainViewModel
     let panelWidth: CGFloat
-    
-    // Calculate histogram height based on panel width (maintain aspect ratio)
-    private var histogramHeight: CGFloat {
-        // Base: 300px width -> 180px height (ratio 5:3)
-        // Scale proportionally
-        let baseWidth: CGFloat = 300
-        let baseHeight: CGFloat = 180
-        let ratio = baseHeight / baseWidth
-        return panelWidth * ratio
-    }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header bar.
@@ -42,19 +32,17 @@ struct HistogramView: View {
                     title: "HDR Input",
                     viewModel: viewModel
                 )
-                .frame(height: histogramHeight)
-                
+
                 Divider()
-                
+
                 // SDR output histogram.
                 HistogramPanelSDR(
                     title: "SDR Output",
                     viewModel: viewModel
                 )
-                .frame(height: histogramHeight)
-                
+
                 Divider()
-                
+
                 // Clipped pixels toggle and stats
                 if let selectedImage = viewModel.selectedImage {
                     VStack(alignment: .leading, spacing: 8) {
@@ -170,7 +158,8 @@ struct HistogramPanel: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(3, contentMode: .fit)   // drawing area: width = 3 × height
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
@@ -236,7 +225,8 @@ struct HistogramPanelSDR: View {
                         .foregroundStyle(.gray)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(3, contentMode: .fit)   // drawing area: width = 3 × height
             .clipShape(RoundedRectangle(cornerRadius: 6))
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
@@ -259,7 +249,11 @@ struct HistogramCanvasCompact: View {
         
         // Read a token so SwiftUI invalidates/recreates the Canvas when the percentile→headroom lookup becomes available.
         let generation = viewModel.percentileHeadroomCacheGeneration
-        
+
+        // Frozen rendering parameters (previously tuned via debug sliders).
+        let smoothing = 5.0          // moving-average window applied at render time
+        let yPercentile = 98.0       // robust Y-axis scale reference percentile
+
         Canvas { context, size in
             // 1) Background colors (SDR teal + HDR maroon)
             let sdrRect = CGRect(x: 0, y: 0, width: size.width * x_at_ref_white, height: size.height)
@@ -274,24 +268,41 @@ struct HistogramCanvasCompact: View {
                 with: .color(Color(red: 0x24/255.0, green: 0x1a/255.0, blue: 0x1b/255.0))
             )
             
-            // Find the maximum bin count for normalization.
-            let maxCount = max(
-                histogram.redCounts.max() ?? 1,
-                histogram.greenCounts.max() ?? 1,
-                histogram.blueCounts.max() ?? 1,
-                histogram.lumaCounts.max() ?? 1
-            )
-            
-            let scale = size.height * 0.85 / CGFloat(maxCount)
-            
-            // Draw RGB channels.
-            drawCurve(context: &context, counts: histogram.redCounts, color: .red, scale: scale, size: size)
-            drawCurve(context: &context, counts: histogram.greenCounts, color: .green, scale: scale, size: size)
-            drawCurve(context: &context, counts: histogram.blueCounts, color: .blue, scale: scale, size: size)
-            
-            // Draw luminance (Y) on top with a thicker stroke.
-            drawCurve(context: &context, counts: histogram.lumaCounts, color: .white, scale: scale, size: size, lineWidth: 1.8)
-            
+            // Smooth the raw counts at render time (window is tunable live).
+            let win = Int(smoothing.rounded())
+            let red   = HistogramCalculator.movingAverage(histogram.redCounts,   window: win)
+            let green = HistogramCalculator.movingAverage(histogram.greenCounts, window: win)
+            let blue  = HistogramCalculator.movingAverage(histogram.blueCounts,  window: win)
+
+            // Robust Y-axis: scale against a high percentile of the non-zero counts (not the
+            // absolute max), so a single tall spike clips off the top while the body of the
+            // histogram fills the upper part of the panel.
+            let scaleRef = robustScaleReference(red, green, blue, percentile: yPercentile)
+            let scale = size.height * 0.85 / max(scaleRef, 1)
+
+            // 1) Filled areas using Lightroom's exact per-overlap palette (measured in Photoshop).
+            //    Painted opaque, smallest subsets first so larger overlaps overpaint them — this
+            //    reproduces the palette exactly, independent of the background underneath.
+            let redArea   = areaPath(counts: red,   scale: scale, size: size)
+            let greenArea = areaPath(counts: green, scale: scale, size: size)
+            let blueArea  = areaPath(counts: blue,  scale: scale, size: size)
+            // Singles
+            paintSubset(context, areas: [redArea],   color: lrRGB(184, 78, 67),  size: size)
+            paintSubset(context, areas: [greenArea], color: lrRGB(84, 141, 92),  size: size)
+            paintSubset(context, areas: [blueArea],  color: lrRGB(52, 108, 179), size: size)
+            // Pairs (the front channel wins; the palette already encodes the z-order outcome).
+            paintSubset(context, areas: [redArea, greenArea], color: lrRGB(108, 141, 92), size: size) // R∩G
+            paintSubset(context, areas: [greenArea, blueArea], color: lrRGB(82, 152, 109), size: size) // G∩B
+            paintSubset(context, areas: [redArea, blueArea],  color: lrRGB(72, 110, 178), size: size) // R∩B
+            // Triple
+            paintSubset(context, areas: [redArea, greenArea, blueArea], color: lrRGB(204, 204, 204), size: size)
+
+            // 2) Thin outlines on the top edge of each area. Order red → blue → green so the
+            //    green outline ends up frontmost (matches Lightroom's z-ordering).
+            strokeTopEdge(context: &context, counts: red,   color: lrRGB(216, 74, 54), scale: scale, size: size)
+            strokeTopEdge(context: &context, counts: blue,  color: lrRGB(41, 63, 158), scale: scale, size: size)
+            strokeTopEdge(context: &context, counts: green, color: lrRGB(88, 195, 77), scale: scale, size: size)
+
             // Reference vertical markers.
             drawVerticalBars(context: &context, size: size)
             
@@ -326,34 +337,65 @@ struct HistogramCanvasCompact: View {
     
     // MARK: - Drawing Helpers
     
-    private func drawCurve(
-        context: inout GraphicsContext,
-        counts: [Float],
-        color: Color,
-        scale: CGFloat,
-        size: CGSize,
-        lineWidth: CGFloat = 1.2
-    ) {
+    /// Y position (clamped to the panel) for a given count.
+    private func yFor(_ count: Float, scale: CGFloat, size: CGSize) -> CGFloat {
+        let h = CGFloat(count) * scale
+        return size.height - min(h, size.height)   // clamp: tall spikes clip at the top
+    }
+
+    /// Robust scale reference: a high percentile of the non-zero counts across the RGB channels.
+    private func robustScaleReference(_ a: [Float], _ b: [Float], _ c: [Float], percentile: Double) -> CGFloat {
+        var vals: [Float] = []
+        vals.reserveCapacity(a.count * 3)
+        for arr in [a, b, c] {
+            for v in arr where v > 0 { vals.append(v) }
+        }
+        guard !vals.isEmpty else { return 1 }
+        vals.sort()
+        let p = max(0, min(1, percentile / 100.0))
+        let idx = min(vals.count - 1, Int((Double(vals.count - 1) * p).rounded()))
+        return CGFloat(vals[idx])
+    }
+
+    /// Color from 0–255 RGB components.
+    private func lrRGB(_ r: Double, _ g: Double, _ b: Double) -> Color {
+        Color(red: r / 255.0, green: g / 255.0, blue: b / 255.0)
+    }
+
+    /// Fills the intersection of the given area paths with an opaque color.
+    /// Clipping is applied to a local copy of the context, so it doesn't affect later draws.
+    private func paintSubset(_ ctx: GraphicsContext, areas: [Path], color: Color, size: CGSize) {
+        var c = ctx
+        for a in areas { c.clip(to: a) }
+        c.fill(Path(CGRect(origin: .zero, size: size)), with: .color(color))
+    }
+
+    /// Closed area under the curve (curve → down to the baseline), for additive fills.
+    private func areaPath(counts: [Float], scale: CGFloat, size: CGSize) -> Path {
         var path = Path()
-        
+        guard !counts.isEmpty else { return path }
+        path.move(to: CGPoint(x: CGFloat(histogram.xCenters[0]) * size.width, y: size.height))
         for (i, count) in counts.enumerated() {
             let x = CGFloat(histogram.xCenters[i]) * size.width
-            let y = size.height - CGFloat(count) * scale
-            
-            if i == 0 {
-                path.move(to: CGPoint(x: x, y: y))
-            } else {
-                path.addLine(to: CGPoint(x: x, y: y))
-            }
+            path.addLine(to: CGPoint(x: x, y: yFor(count, scale: scale, size: size)))
         }
-        
-        context.stroke(
-            path,
-            with: .color(color.opacity(0.95)),
-            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-        )
+        path.addLine(to: CGPoint(x: CGFloat(histogram.xCenters[counts.count - 1]) * size.width, y: size.height))
+        path.closeSubpath()
+        return path
     }
-    
+
+    /// Thin darker stroke along the top edge of a channel area.
+    private func strokeTopEdge(context: inout GraphicsContext, counts: [Float], color: Color, scale: CGFloat, size: CGSize, lineWidth: CGFloat = 1.0) {
+        var path = Path()
+        for (i, count) in counts.enumerated() {
+            let x = CGFloat(histogram.xCenters[i]) * size.width
+            let y = yFor(count, scale: scale, size: size)
+            if i == 0 { path.move(to: CGPoint(x: x, y: y)) }
+            else { path.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round))
+    }
+
     private func drawVerticalBars(context: inout GraphicsContext, size: CGSize) {
         let barColor = Color(red: 0xC0/255.0, green: 0xC6/255.0, blue: 0xCC/255.0)
         

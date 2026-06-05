@@ -112,8 +112,8 @@ nonisolated class HistogramCalculator {
     
     // MARK: - Moving Average
     
-    /// Symmetric moving average (odd window)
-    private static func movingAverage(_ y: [Float], window: Int = 11) -> [Float] {
+    /// Symmetric moving average (odd window). Exposed so the renderer can smooth at draw time.
+    static func movingAverage(_ y: [Float], window: Int = 11) -> [Float] {
         var win = max(1, window)
         if win % 2 == 0 { win += 1 }
         if win == 1 { return y }
@@ -243,10 +243,11 @@ nonisolated class HistogramCalculator {
         }
         
         // 4) Convert counts to Float and apply smoothing
-        let redSmooth = movingAverage(redHist.map { Float($0) }, window: smoothWindow)
-        let greenSmooth = movingAverage(greenHist.map { Float($0) }, window: smoothWindow)
-        let blueSmooth = movingAverage(blueHist.map { Float($0) }, window: smoothWindow)
-        let lumaSmooth = movingAverage(lumaHist.map { Float($0) }, window: smoothWindow)
+        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
+        let redSmooth = redHist.map { Float($0) }
+        let greenSmooth = greenHist.map { Float($0) }
+        let blueSmooth = blueHist.map { Float($0) }
+        let lumaSmooth = lumaHist.map { Float($0) }
         
         // 5) Compute bin centers in u-space and nits
         var centersU = [Float]()
@@ -405,10 +406,11 @@ nonisolated class HistogramCalculator {
         }
         
         // 5) Converti conteggi a Float e applica smoothing
-        let redSmooth = movingAverage(redHist.map { Float($0) }, window: smoothWindow)
-        let greenSmooth = movingAverage(greenHist.map { Float($0) }, window: smoothWindow)
-        let blueSmooth = movingAverage(blueHist.map { Float($0) }, window: smoothWindow)
-        let lumaSmooth = movingAverage(lumaHist.map { Float($0) }, window: smoothWindow)
+        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
+        let redSmooth = redHist.map { Float($0) }
+        let greenSmooth = greenHist.map { Float($0) }
+        let blueSmooth = blueHist.map { Float($0) }
+        let lumaSmooth = lumaHist.map { Float($0) }
         
         // 6) Calcola bin centers in u-space e nit
         var centersU = [Float]()

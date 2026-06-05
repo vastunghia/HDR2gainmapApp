@@ -185,10 +185,11 @@ nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
         memcpy(&lumaHist, histogramBuffers[3].contents(), histBufferSize)
         
         // 7) Convert to Float and apply smoothing (CPU is fine here; it is fast).
-        let redSmooth = Self.movingAverage(redHist.map { Float($0) }, window: smoothWindow)
-        let greenSmooth = Self.movingAverage(greenHist.map { Float($0) }, window: smoothWindow)
-        let blueSmooth = Self.movingAverage(blueHist.map { Float($0) }, window: smoothWindow)
-        let lumaSmooth = Self.movingAverage(lumaHist.map { Float($0) }, window: smoothWindow)
+        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
+        let redSmooth = redHist.map { Float($0) }
+        let greenSmooth = greenHist.map { Float($0) }
+        let blueSmooth = blueHist.map { Float($0) }
+        let lumaSmooth = lumaHist.map { Float($0) }
         
         // 8) Compute bin centers and X positions
         var centersU = [Float]()
@@ -328,10 +329,11 @@ nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
         memcpy(&lumaHist, histogramBuffers[3].contents(), histBufferSize)
         
         // 7) Smoothing
-        let redSmooth = Self.movingAverage(redHist.map { Float($0) }, window: smoothWindow)
-        let greenSmooth = Self.movingAverage(greenHist.map { Float($0) }, window: smoothWindow)
-        let blueSmooth = Self.movingAverage(blueHist.map { Float($0) }, window: smoothWindow)
-        let lumaSmooth = Self.movingAverage(lumaHist.map { Float($0) }, window: smoothWindow)
+        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
+        let redSmooth = redHist.map { Float($0) }
+        let greenSmooth = greenHist.map { Float($0) }
+        let blueSmooth = blueHist.map { Float($0) }
+        let lumaSmooth = lumaHist.map { Float($0) }
         
         // 8) Bin centers
         var centersU = [Float]()
