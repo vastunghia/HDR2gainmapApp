@@ -154,16 +154,22 @@ struct TonemapControlsSection: View {
                         .foregroundStyle(.tertiary)
                 }
                 
-                // Checkbox to enable target headroom adjustment
-                Toggle("Adjust also Target headroom", isOn: $settings.adjustTargetHeadroom)
-                    .disabled(!viewModel.isCurrentImageValid)
-                    .onChange(of: settings.adjustTargetHeadroom) {
-                        // If disabled, reset to default 1.0
-                        if !settings.adjustTargetHeadroom {
+                // Checkbox to enable target headroom adjustment.
+                // The reset-to-1.0 lives in the binding setter (not an `.onChange`) so it
+                // fires only on a real user toggle — an `.onChange(of:)` would also fire when
+                // `settings` rebinds to another image on selection change, writing 1.0 into
+                // the newly selected image.
+                Toggle("Adjust also Target headroom", isOn: Binding(
+                    get: { settings.adjustTargetHeadroom },
+                    set: { newValue in
+                        settings.adjustTargetHeadroom = newValue
+                        if !newValue {
                             settings.targetHeadroom = 1.0
                         }
                         onSettingsChange()
                     }
+                ))
+                .disabled(!viewModel.isCurrentImageValid)
                 
                 // Target headroom slider (enabled only when checkbox is checked)
                 TargetHeadroomControls(
@@ -599,7 +605,35 @@ struct ExportSection: View {
             .buttonStyle(.bordered)
             .controlSize(.large)
             .disabled(viewModel.images.isEmpty || viewModel.isExporting)
-            
+
+            Divider()
+                .padding(.vertical, 4)
+
+            // Settings profile: save / restore per-image tone-mapping settings for the folder.
+            HStack(spacing: 8) {
+                Button(action: {
+                    viewModel.exportSettingsProfile()
+                }) {
+                    Label("Export Settings", systemImage: "slider.horizontal.below.square.and.square.filled")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(viewModel.images.isEmpty || viewModel.isExporting)
+                .help("Save the tone-mapping settings of this folder to a JSON profile")
+
+                Button(action: {
+                    viewModel.importSettingsProfile()
+                }) {
+                    Label("Import Settings", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(viewModel.isExporting)
+                .help("Load a previously saved tone-mapping settings profile")
+            }
+
             Text("Exports HEIC with embedded gain map and Maker Apple metadata")
                 .font(.caption)
                 .foregroundStyle(.secondary)

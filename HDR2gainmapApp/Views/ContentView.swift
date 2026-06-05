@@ -30,6 +30,9 @@ struct ContentView: View {
                 viewModel.refreshMeasuredHeadroom()
             }
         }
+        // Expose this window's view model to the menu commands (File ▸ Export/Import Settings),
+        // so they act on the frontmost window.
+        .focusedSceneValue(\.mainViewModel, viewModel)
     }
 }
 
@@ -60,22 +63,41 @@ struct FolderSelectionView: View {
                 .font(.largeTitle)
                 .fontWeight(.bold)
 
-            Text("Select a folder containing HDR PNG images to get started")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            VStack(spacing: 12) {
+                Text("Select a folder containing HDR PNG images to get started")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
 
-            Button(action: {
-                viewModel.selectInputFolder()
-            }) {
-                Label("Select Input Folder", systemImage: "folder.badge.plus")
-                    .font(.headline)
+                Button(action: {
+                    viewModel.selectInputFolder()
+                }) {
+                    Label("Select Input Folder", systemImage: "folder.badge.plus")
+                        .font(.headline)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .keyboardShortcut(.defaultAction)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+
+            VStack(spacing: 12) {
+                Text("…or import previously saved settings for a folder of HDR PNG images")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                Button(action: {
+                    viewModel.importSettingsProfile()
+                }) {
+                    Label("Import Settings", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .help("Open a folder from a saved tone-mapping settings profile")
+            }
         }
         .padding(60)
-        .frame(minWidth: 600, minHeight: 400)
+        .frame(minWidth: 600, minHeight: 560)
     }
 }
 

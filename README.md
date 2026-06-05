@@ -31,6 +31,7 @@ The resulting HEIC files work seamlessly (i.e. **the SDR or the HDR version of t
 - **Live HDR and SDR histograms** with split-axis layout (sRGB curve for SDR, logarithmic for HDR)
 - **Detailed clipping statistics** with interactive legend window
 - **Batch export** with progress tracking and possibility to append a string of your choice to all file names
+- **Export / import development settings**: save the per-image tone-mapping "develop" settings of a whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing a look across machines (only images you actually customized are stored; any images listed in the profile but missing from the folder are reported on import)
 - **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view)
 - **Background pre-loading**: when you select an image, its neighbours (next and previous) are warmed in the background so sequential browsing feels near-instant — without slowing down work on the current image
 - **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are currently resident in memory (and will therefore load instantly); it updates live as images are cached and as older ones are evicted
@@ -127,6 +128,26 @@ Two export settings are configurable in the Preferences window:
 
 - **HEIC Quality** — the HEIF compression quality (default: 0.95); higher quality produces larger files with better fidelity.
 - **Gain Map Resolution** — whether the gain map is stored at half (½×, the default, matching Apple's native HDR captures) or full (1×) image resolution. A gain map is smooth and low-detail, so half resolution shrinks the file with minimal visual impact.
+
+## Saving & Reusing Tone-Mapping Settings
+
+The tone-mapping ("develop") settings you craft for each image live only in memory during a
+session. To preserve them — or carry them to another machine — you can export them to a
+**settings profile**, a small human-readable JSON file, and import it back later.
+
+- **Export Settings** writes a profile for the currently open folder. To keep the file compact,
+  only images whose settings differ from the defaults are stored; for each, only the parameters
+  you actually changed are saved (method, and the relevant source/target-headroom values). The
+  profile also records the source folder and the app version that produced it.
+- **Import Settings** lets you pick a profile, then confirm the folder it refers to (the file
+  picker is pre-positioned on the saved path). The matching images are reloaded with their
+  settings already applied. If the profile references images that are no longer in the folder
+  (e.g. renamed or removed), you are notified with the list of missing files, and the remaining
+  images are still applied.
+
+Both actions are available from the **File menu** (Export Settings ⇧⌘E / Import Settings ⇧⌘I),
+from the **export panel**, and — for import — directly from the **start screen**, so you can
+reopen a folder straight from a saved profile.
 
 ## Metal Acceleration
 

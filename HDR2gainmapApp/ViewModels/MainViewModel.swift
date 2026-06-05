@@ -13,6 +13,10 @@ class MainViewModel {
     // Loaded images
     var images: [HDRImage] = []
 
+    // Folder the loaded images came from (used as the source path for settings profiles
+    // and as the default location of the folder picker on import).
+    private(set) var inputFolderURL: URL?
+
     // IDs of images whose pixel data is currently resident in cache (drives the "bolt" thumbnail
     // badge). Refreshed by a lightweight poll + after each selection.
     private(set) var warmImageIDs: Set<UUID> = []
@@ -123,7 +127,12 @@ class MainViewModel {
     }
     
     /// Loads all HDR PNG images from the selected folder.
-    private func loadImagesFromFolder(_ folderURL: URL) async {
+    ///
+    /// When `profile` is supplied, each entry's settings are applied to the matching image
+    /// (matched by `url.lastPathComponent`). Returns the list of profile file names that had
+    /// no match in the folder, so the caller can warn about missing images.
+    @discardableResult
+    private func loadImagesFromFolder(_ folderURL: URL, applying profile: SettingsProfile? = nil) async -> [String] {
         do {
             let fileManager = FileManager.default
             let contents = try fileManager.contentsOfDirectory(
@@ -131,18 +140,44 @@ class MainViewModel {
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )
-            
+
             let pngFiles = contents.filter { $0.pathExtension.lowercased() == "png" }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            
+
             guard !pngFiles.isEmpty else {
                 self.errorMessage = "No PNG files found in selected folder"
                 self.showError = true
-                return
+                return []
             }
-            
+
             // Create HDRImage objects without triggering thumbnail generation yet.
             self.images = pngFiles.map { HDRImage(url: $0, loadThumbnailImmediately: false) }
+            self.inputFolderURL = folderURL
+
+            // Apply an imported profile, collecting file names with no match in this folder.
+            var missing: [String] = []
+            if let profile {
+                let imagesByName = Dictionary(
+                    self.images.map { ($0.url.lastPathComponent, $0) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                for entry in profile.images {
+                    if let image = imagesByName[entry.fileName] {
+                        image.settings.applyCoreDTO(entry.settings)
+                    } else {
+                        missing.append(entry.fileName)
+                    }
+                }
+            }
+
+            // Warn about missing images right away — before the (slow) first-preview and
+            // thumbnail work below — so the alert appears promptly instead of seconds later.
+            if !missing.isEmpty {
+                let list = missing.joined(separator: "\n• ")
+                self.errorMessage = "Imported settings, but these images from the profile were not found in the folder:\n\n• \(list)"
+                self.showError = true
+                await Task.yield()  // let SwiftUI present the alert before the heavy work starts
+            }
 
             // Keep the thumbnail cache badges in sync from now on.
             startCacheStatusPolling()
@@ -151,13 +186,16 @@ class MainViewModel {
             if let firstImage = self.images.first {
                 await self.selectImage(firstImage)
             }
-            
+
             // Start thumbnail generation in order (throttled).
             await loadThumbnailsInOrder()
-            
+
+            return missing
+
         } catch {
             self.errorMessage = "Failed to load images: \(error.localizedDescription)"
             self.showError = true
+            return []
         }
     }
     
@@ -580,8 +618,111 @@ class MainViewModel {
      - Preview: requested via `generatePreview(for:)` (processor may cache).
      */
     
+    // MARK: - Settings Profile (export / import)
+
+    /// Exports the per-image tone-mapping settings of the loaded folder to a JSON profile.
+    /// Only images whose core settings differ from the defaults are included.
+    func exportSettingsProfile() {
+        guard !images.isEmpty else { return }
+
+        let folderURL = inputFolderURL ?? images.first?.url.deletingLastPathComponent()
+        let folderPath = folderURL?.path ?? ""
+        let folderName = folderURL?.lastPathComponent ?? "images"
+
+        let entries: [ImageSettingsEntry] = images.compactMap { image in
+            guard let dto = image.settings.makeCoreDTO() else { return nil }
+            return ImageSettingsEntry(fileName: image.url.lastPathComponent, settings: dto)
+        }
+
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>"
+        let profile = SettingsProfile(
+            schemaVersion: SettingsProfile.currentSchemaVersion,
+            appVersion: appVersion,
+            exportedAt: Date(),
+            folderPath: folderPath,
+            folderName: folderName,
+            images: entries
+        )
+
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(folderName)-settings.json"
+        panel.allowedContentTypes = [UTType.json]
+        panel.message = "Choose where to save the tone-mapping settings profile"
+
+        panel.begin { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let url = panel.url else { return }
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            encoder.dateEncodingStrategy = .iso8601
+            do {
+                let data = try encoder.encode(profile)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                self.errorMessage = "Failed to save settings profile: \(error.localizedDescription)"
+                self.showError = true
+            }
+        }
+    }
+
+    /// Imports a JSON settings profile: lets the user pick the file, then (to satisfy the
+    /// sandbox) confirm the source folder via an open panel pre-positioned on the saved path.
+    /// Loads the folder, applies the matching settings, and warns about any missing images.
+    func importSettingsProfile() {
+        let filePanel = NSOpenPanel()
+        filePanel.canChooseFiles = true
+        filePanel.canChooseDirectories = false
+        filePanel.allowsMultipleSelection = false
+        filePanel.allowedContentTypes = [UTType.json]
+        filePanel.message = "Choose a tone-mapping settings profile to import"
+
+        filePanel.begin { [weak self] response in
+            guard let self else { return }
+            guard response == .OK, let fileURL = filePanel.url else { return }
+
+            let profile: SettingsProfile
+            do {
+                let data = try Data(contentsOf: fileURL)
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .iso8601
+                profile = try decoder.decode(SettingsProfile.self, from: data)
+            } catch {
+                self.errorMessage = "Failed to read settings profile: \(error.localizedDescription)"
+                self.showError = true
+                return
+            }
+
+            guard profile.schemaVersion <= SettingsProfile.currentSchemaVersion else {
+                self.errorMessage = "This settings profile was created by a newer version of the app and can't be read. Please update the app."
+                self.showError = true
+                return
+            }
+
+            // Confirm the source folder (grants sandbox access), defaulting to the saved path.
+            let folderPanel = NSOpenPanel()
+            folderPanel.canChooseFiles = false
+            folderPanel.canChooseDirectories = true
+            folderPanel.allowsMultipleSelection = false
+            folderPanel.message = "Confirm the folder containing the HDR images for this profile"
+            if !profile.folderPath.isEmpty {
+                folderPanel.directoryURL = URL(fileURLWithPath: profile.folderPath, isDirectory: true)
+            }
+
+            folderPanel.begin { [weak self] folderResponse in
+                guard let self else { return }
+                guard folderResponse == .OK, let folderURL = folderPanel.url else { return }
+
+                // loadImagesFromFolder surfaces the "missing images" warning itself, early.
+                Task {
+                    await self.loadImagesFromFolder(folderURL, applying: profile)
+                }
+            }
+        }
+    }
+
     // MARK: - Export
-    
+
     /// Exports the currently selected image.
     func exportCurrentImage() {
         guard let image = selectedImage else { return }
