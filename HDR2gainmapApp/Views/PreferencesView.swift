@@ -12,6 +12,10 @@ struct PreferencesView: View {
     @AppStorage("gainMapSubsampleFactor")
     private var gainMapSubsampleFactor: Int = 2
 
+    /// Pixel-peeping zoom level (percent of actual pixels): 100 = 1 image px : 1 point.
+    @AppStorage("pixelPeepZoomLevel")
+    private var pixelPeepZoomLevel: Int = 200
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
@@ -74,6 +78,27 @@ struct PreferencesView: View {
                          """)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    // Pixel-peeping zoom level
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Zoom Level", selection: $pixelPeepZoomLevel) {
+                            Text("100%").tag(100)
+                            Text("200%").tag(200)
+                            Text("400%").tag(400)
+                        }
+                        .pickerStyle(.segmented)
+                        .fixedSize()
+                    }
+
+                    Text("""
+                         How far the preview zooms when you click it ("pixel peeping"). \
+                         100% shows actual pixels (1 image pixel per point); 200% / 400% magnify \
+                         further. Click the image to zoom toward that spot, click again to reset.
+                         """)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
                 .padding(14)
 
@@ -82,6 +107,7 @@ struct PreferencesView: View {
                     Button("Reset defaults") {
                         heicExportQuality = 0.95
                         gainMapSubsampleFactor = 2
+                        pixelPeepZoomLevel = 200
                     }
                     .buttonStyle(.bordered)
                 }
@@ -90,7 +116,7 @@ struct PreferencesView: View {
             Spacer(minLength: 0)
         }
         .padding(24)
-        .frame(width: 640, height: 400)
+        .frame(width: 640, height: 500)
         .closeOnEscape()
     }
 }

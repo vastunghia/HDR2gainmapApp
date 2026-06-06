@@ -37,7 +37,7 @@ struct HistogramView: View {
 
                 // SDR output histogram.
                 HistogramPanelSDR(
-                    title: "SDR Output",
+                    title: "Tonemapped SDR",
                     viewModel: viewModel
                 )
 
@@ -51,7 +51,8 @@ struct HistogramView: View {
                             get: { selectedImage.settings.showClippedOverlay },
                             set: { selectedImage.settings.showClippedOverlay = $0 }
                         ))
-                        .disabled(!viewModel.isCurrentImageValid)
+                        // The clipping overlay applies only to the SDR tone-mapped view.
+                        .disabled(!viewModel.isCurrentImageValid || viewModel.previewMode != .sdrTonemapped)
                         .onChange(of: selectedImage.settings.showClippedOverlay) {
                             viewModel.refreshPreviewOnly()
                         }

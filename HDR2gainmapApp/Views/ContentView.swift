@@ -119,6 +119,31 @@ struct MainInterfaceView: View {
             HStack(spacing: 0) {
                 // Left: preview + thumbnail bar.
                 VStack(spacing: 0) {
+                    // View-mode switcher (which image the preview pane shows).
+                    Picker("View", selection: $viewModel.previewMode) {
+                        ForEach(PreviewMode.allCases, id: \.self) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                    .padding(.bottom, 4)
+                    .disabled(!viewModel.isCurrentImageValid)
+                    .onChange(of: viewModel.previewMode) {
+                        viewModel.handlePreviewModeChange()
+                    }
+
+                    // Display-headroom readout. Always shown so the layout doesn't jump; the numbers
+                    // read "n/a" in the non-EDR views (SDR / Gain Map), where EDR isn't used. It's a
+                    // display property, not an image one, so it lives here, not in the MetadataBar.
+                    EDRHeadroomIndicator(active: viewModel.previewMode.isHDR)
+                        .padding(.horizontal, 12)
+                        .padding(.bottom, 6)
+
+                    Divider()
+
                     // Preview pane (center).
                     PreviewPane(viewModel: viewModel)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -163,6 +188,8 @@ struct MainInterfaceView: View {
                 onLeft:  { viewModel.advanceSelection(by: -1) },
                 onRight: { viewModel.advanceSelection(by: 1) }
             )
+            // M marks / unmarks the current image as "ready for export".
+            .markKeyShortcut { viewModel.toggleMarkForSelected() }
         }
     }
 }

@@ -48,7 +48,21 @@ struct ControlPanel: View {
                     
                     Divider()
                         .padding(.top, 24)
-                    
+
+                    // "Mark as ready" hint (the M key toggles the green thumbnail flag).
+                    HStack(spacing: 6) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, .green)
+                        Text("Press M to mark / unmark current image")
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 12)
+
                     // Export header (consistent style)
                     HStack {
                         Text("Export")

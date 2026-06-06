@@ -39,6 +39,9 @@ struct ImageSettingsEntry: Codable {
     /// File name *with* extension (`url.lastPathComponent`), used to match on import.
     var fileName: String
     var settings: CoreSettingsDTO
+    /// User "ready for export" flag. Optional & omitted when nil (backward compatible: older
+    /// profiles without this field decode as nil → unmarked).
+    var isMarked: Bool? = nil
 }
 
 // MARK: - Profile file

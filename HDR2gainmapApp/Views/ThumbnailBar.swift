@@ -97,7 +97,36 @@ struct ThumbnailCell: View {
                         .help("In memory — loads quickly")
                 }
             }
+            // "Ready for export" flag (toggled with the M key).
+            .overlay(alignment: .topLeading) {
+                if image.isMarked {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.callout)
+                        .symbolRenderingMode(.palette)
+                        .foregroundStyle(.white, .green)
+                        .shadow(color: .black.opacity(0.4), radius: 1, y: 0.5)
+                        .padding(4)
+                        .transition(.opacity)
+                        .help("Marked as ready for export (press M to toggle)")
+                }
+            }
+            // "Settings modified" badge: tone-mapping differs from the defaults.
+            .overlay(alignment: .bottomLeading) {
+                if image.settings.isModifiedFromDefaults {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.black.opacity(0.7))
+                        .padding(3)
+                        .background(Circle().fill(Color(white: 0.8)))
+                        .overlay(Circle().strokeBorder(.black.opacity(0.25), lineWidth: 0.5))
+                        .padding(4)
+                        .transition(.opacity)
+                        .help("Settings changed from defaults")
+                }
+            }
             .animation(.easeInOut(duration: 0.2), value: isCached)
+            .animation(.easeInOut(duration: 0.2), value: image.isMarked)
+            .animation(.easeInOut(duration: 0.2), value: image.settings.isModifiedFromDefaults)
             
             // Filename: keep the label width aligned with the outer container.
             Text(image.fileName)

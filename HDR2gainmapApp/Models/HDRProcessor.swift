@@ -3,6 +3,36 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 import AppKit
 
+/// Which image the preview pane should display. Lives here (rather than in `ProcessingSettings`)
+/// because it is a global *viewing* state, not a per-image export parameter, yet it must be
+/// visible to `PreviewParams` which is shared with the CLI target.
+enum PreviewMode: String, CaseIterable, Sendable {
+    // Declaration order drives the left→right order of the segmented picker.
+    case hdrInput        // original HDR, shown via EDR on capable displays
+    case sdrTonemapped   // tone-mapped SDR base (default; supports the clipping overlay)
+    case gainMap         // standalone grayscale gain map
+    case finalOutput     // SDR + gain map round-tripped back to HDR (what the export produces)
+
+    /// Whether the rendered image carries extended-range (HDR) content and must be displayed
+    /// through the EDR path. (Also the views where the display-headroom indicator is relevant.)
+    var isHDR: Bool {
+        switch self {
+        case .hdrInput, .finalOutput: return true
+        case .sdrTonemapped, .gainMap: return false
+        }
+    }
+
+    /// Label for the segmented picker.
+    var displayName: String {
+        switch self {
+        case .hdrInput:      return "HDR Input"
+        case .sdrTonemapped: return "Tonemapped SDR"
+        case .gainMap:       return "Gain Map"
+        case .finalOutput:   return "SDR + Gain Map (Final Output)"
+        }
+    }
+}
+
 /// Bridge between the CLI pipeline and SwiftUI; orchestrates HDR image processing.
 @MainActor
 class HDRProcessor {
@@ -38,10 +68,14 @@ class HDRProcessor {
         let directSourceHeadroom: Float?
         let targetHeadroom: Float?
         let showClippedOverlay: Bool
+        // Which view to render. The CLI never sets this (defaults to `.sdrTonemapped`).
+        let mode: PreviewMode
+        // Affects the `.finalOutput` view only (the gain-map encoding the export would use).
+        let gainMapAsRGB: Bool
     }
 
     /// Snapshots the live per-image settings on the main actor.
-    func previewParams(url: URL, settings: ProcessingSettings) -> PreviewParams {
+    func previewParams(url: URL, settings: ProcessingSettings, mode: PreviewMode = .sdrTonemapped) -> PreviewParams {
         PreviewParams(
             url: url,
             method: settings.sourceHeadroomMethod,
@@ -49,7 +83,9 @@ class HDRProcessor {
             percentile: settings.percentile,
             directSourceHeadroom: settings.directSourceHeadroom,
             targetHeadroom: settings.targetHeadroom,
-            showClippedOverlay: settings.showClippedOverlay
+            showClippedOverlay: settings.showClippedOverlay,
+            mode: mode,
+            gainMapAsRGB: settings.gainMapAsRGB
         )
     }
 
@@ -69,13 +105,29 @@ class HDRProcessor {
     }
 
     nonisolated private func previewKey(_ p: PreviewParams) -> NSString {
-        let k = p.url.absoluteString + "|" + previewSettingsFingerprint(p)
+        var k = p.url.absoluteString + "|mode=" + p.mode.rawValue + "|" + previewSettingsFingerprint(p)
+        // Only the final-output view depends on the gain-map encoding; keep it out of the other
+        // keys so toggling RGB doesn't needlessly invalidate the SDR/HDR-input caches.
+        if p.mode == .finalOutput { k += ";gm=\(p.gainMapAsRGB)" }
         return NSString(string: k)
     }
 
     /// Convenience for callers that already hold live settings on the main actor.
-    func previewKey(url: URL, settings: ProcessingSettings) -> NSString {
-        previewKey(previewParams(url: url, settings: settings))
+    func previewKey(url: URL, settings: ProcessingSettings, mode: PreviewMode = .sdrTonemapped) -> NSString {
+        previewKey(previewParams(url: url, settings: settings, mode: mode))
+    }
+
+    /// The cached CIImage actually shown for a given view, if present. Used by the Metal display
+    /// path (now all four views) to render the pixels directly. For the SDR view with the clipping
+    /// overlay on, returns the overlay-composited image; otherwise the base / HDR / final / gain-map
+    /// image. All of these are populated by `renderPreviewCore` under the same key.
+    func displayPreviewCIImage(for image: HDRImage, mode: PreviewMode) -> CIImage? {
+        let key = previewKey(url: image.url, settings: image.settings, mode: mode)
+        if mode == .sdrTonemapped, image.settings.showClippedOverlay,
+           let overlay = previewOverlayCache.object(forKey: key) {
+            return overlay
+        }
+        return previewBaseCache.object(forKey: key)
     }
     
     
@@ -121,21 +173,38 @@ class HDRProcessor {
     
     // Convenience overload that preserves the original API:
     func generatePreview(for image: HDRImage) async throws -> NSImage {
-        try await generatePreview(for: image, reportClipping: nil)
+        try await generatePreview(for: image, mode: .sdrTonemapped, reportClipping: nil)
     }
-    
+
     // Nuova versione con callback
-    
+
     func generatePreview(
         for image: HDRImage,
+        mode: PreviewMode = .sdrTonemapped,
         reportClipping: ((Int, Int, DetailedClippingStats?) -> Void)?
     ) async throws -> NSImage {
-        
+
         // Snapshot the live settings on the main actor before any off-main work.
-        let params = previewParams(url: image.url, settings: image.settings)
+        let params = previewParams(url: image.url, settings: image.settings, mode: mode)
         let baseKey = previewKey(params)
-        let wantOverlay = params.showClippedOverlay
         let file = params.url.lastPathComponent
+
+        // Non-SDR views (HDR input / final output / gain map) carry no clipping overlay; a single
+        // rendered CIImage is cached per (mode, settings) key. The SDR clipping stats are computed
+        // separately (see `sdrClippingStats`) so the legend & count stay available here too.
+        if mode != .sdrTonemapped {
+            if let cached = previewBaseCache.object(forKey: baseKey) {
+                let t = Prof.tic()
+                defer { Prof.toc("preview modeHit→NSImage [\(file)]", t) }
+                return try ciImageToNSImage(cached, hdr: mode.isHDR)
+            }
+            let t = Prof.tic()
+            let r = try await renderPreviewCore(params: params, baseKey: baseKey)
+            Prof.toc("preview MISS renderCore [\(file)]", t)
+            return r.image
+        }
+
+        let wantOverlay = params.showClippedOverlay
 
         // Cached clipping stats for this settings key (available regardless of the overlay flag).
         let cachedDetailed = previewDetailedCache.object(forKey: baseKey)?.stats
@@ -204,46 +273,47 @@ class HDRProcessor {
 
         try Task.checkCancellation()
 
-        let tTone = Prof.tic()
-        let sdrBase: CIImage
-        switch params.method {
-        case .peakMax:
-            // PeakMax: use the derived formula.
-            let derivedHeadroom = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, params.tonemapRatio))
-            let targetHeadroom = params.targetHeadroom ?? 1.0
-            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: derivedHeadroom, targetHeadroom: targetHeadroom) else {
-                throw ProcessingError.tonemapFailed
-            }
-            sdrBase = s
-
-        case .percentile:
-            // Percentile: derive the source headroom from image content at the selected percentile.
-            let percentileHeadroom = try await percentileHeadroom(url: params.url, percentile: params.percentile)
-            let targetHeadroom = params.targetHeadroom ?? 1.0
-            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: percentileHeadroom, targetHeadroom: targetHeadroom) else {
-                throw ProcessingError.tonemapFailed
-            }
-            sdrBase = s
-
-        case .direct:
-            // Direct: use explicit user-provided values.
-            let sH = params.directSourceHeadroom ?? measuredHeadroom
-            let tH = params.targetHeadroom ?? 1.0
-
-            // Clamp to a reasonable range (0.1× to 2× the measured value).
-            let maxLimit = max(1.0, measuredHeadroom * 2.0)
-            let sH_clamped = min(max(sH, 0.1), maxLimit)
-            let tH_clamped = min(max(tH, 0.1), maxLimit)
-
-            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: sH_clamped, targetHeadroom: tH_clamped) else {
-                throw ProcessingError.tonemapFailed
-            }
-            sdrBase = s
+        // HDR-input view: no tone-mapping, no overlay — render the source HDR through the EDR path.
+        if params.mode == .hdrInput {
+            previewBaseCache.setObject(hdr, forKey: baseKey)
+            let tRender = Prof.tic()
+            defer { Prof.toc("renderCore.render→NSImage(hdrInput) [\(file)]", tRender) }
+            return (try ciImageToNSImage(hdr, hdr: true), 0, 0, nil)
         }
 
+        let tTone = Prof.tic()
+        let sdrBase = try await buildSDRBase(hdr: hdr, params: params, measuredHeadroom: measuredHeadroom)
         // tonemap_sdr builds a lazy CIImage graph; its real cost materializes in the
         // ciImageToNSImage render below. This measures graph construction only.
         Prof.toc("renderCore.tonemapBuild [\(file)]", tTone)
+
+        // Final-output / gain-map views round-trip the SDR base + HDR through an in-memory HEIF
+        // encode (skipping the on-disk write + ISO conversion the real export performs). They
+        // carry no clipping overlay; cache only the finished product under the mode-specific key.
+        switch params.mode {
+        case .finalOutput:
+            try Task.checkCancellation()
+            let tEnc = Prof.tic()
+            let reconstructed = try reconstructHDRFromGainMap(sdrBase: sdrBase, hdr: hdr, gainMapAsRGB: params.gainMapAsRGB)
+            Prof.toc("renderCore.finalOutputEncode [\(file)]", tEnc)
+            previewBaseCache.setObject(reconstructed, forKey: baseKey)
+            let tRender = Prof.tic()
+            defer { Prof.toc("renderCore.render→NSImage(finalOutput) [\(file)]", tRender) }
+            return (try ciImageToNSImage(reconstructed, hdr: true), 0, 0, nil)
+
+        case .gainMap:
+            try Task.checkCancellation()
+            let tEnc = Prof.tic()
+            let gm = try extractGainMapImage(sdrBase: sdrBase, hdr: hdr)
+            Prof.toc("renderCore.gainMapEncode [\(file)]", tEnc)
+            previewBaseCache.setObject(gm, forKey: baseKey)
+            let tRender = Prof.tic()
+            defer { Prof.toc("renderCore.render→NSImage(gainMap) [\(file)]", tRender) }
+            return (try ciImageToNSImage(gm, hdr: false), 0, 0, nil)
+
+        case .sdrTonemapped, .hdrInput:
+            break  // hdrInput already returned above; sdrTonemapped continues below.
+        }
 
         previewBaseCache.setObject(sdrBase, forKey: baseKey)
 
@@ -274,6 +344,83 @@ class HDRProcessor {
             defer { Prof.toc("renderCore.render→NSImage [\(file)]", tRender) }
             return (try ciImageToNSImage(sdrBase), clipped, total, detailed)
         }
+    }
+
+    /// Builds the tone-mapped SDR base for the given settings snapshot. Shared by the SDR preview,
+    /// the HDR/final/gain-map views' encode step, and the clipping-stats computation, so they all
+    /// stay in lock-step.
+    nonisolated private func buildSDRBase(hdr: CIImage, params: PreviewParams, measuredHeadroom: Float) async throws -> CIImage {
+        switch params.method {
+        case .peakMax:
+            let derivedHeadroom = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, params.tonemapRatio))
+            let targetHeadroom = params.targetHeadroom ?? 1.0
+            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: derivedHeadroom, targetHeadroom: targetHeadroom) else {
+                throw ProcessingError.tonemapFailed
+            }
+            return s
+
+        case .percentile:
+            let percentileHeadroom = try await percentileHeadroom(url: params.url, percentile: params.percentile)
+            let targetHeadroom = params.targetHeadroom ?? 1.0
+            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: percentileHeadroom, targetHeadroom: targetHeadroom) else {
+                throw ProcessingError.tonemapFailed
+            }
+            return s
+
+        case .direct:
+            let sH = params.directSourceHeadroom ?? measuredHeadroom
+            let tH = params.targetHeadroom ?? 1.0
+            let maxLimit = max(1.0, measuredHeadroom * 2.0)
+            let sH_clamped = min(max(sH, 0.1), maxLimit)
+            let tH_clamped = min(max(tH, 0.1), maxLimit)
+            guard let s = tonemap_sdr(from: hdr, sourceHeadroom: sH_clamped, targetHeadroom: tH_clamped) else {
+                throw ProcessingError.tonemapFailed
+            }
+            return s
+        }
+    }
+
+    /// Computes (or returns cached) the SDR-output clipping statistics for the given settings,
+    /// independent of the current preview view. The legend and the clipped-pixel count describe the
+    /// SDR output, so they stay available in the HDR / gain-map views too (like the histograms).
+    @concurrent nonisolated func sdrClippingStats(for params: PreviewParams) async throws -> (clipped: Int, total: Int, detailed: DetailedClippingStats?) {
+        // Stats depend only on the URL + tone-map settings; key them under the SDR view, where the
+        // SDR preview render also caches them, so the two paths share results.
+        let sdrParams = PreviewParams(
+            url: params.url,
+            method: params.method,
+            tonemapRatio: params.tonemapRatio,
+            percentile: params.percentile,
+            directSourceHeadroom: params.directSourceHeadroom,
+            targetHeadroom: params.targetHeadroom,
+            showClippedOverlay: params.showClippedOverlay,
+            mode: .sdrTonemapped,
+            gainMapAsRGB: params.gainMapAsRGB
+        )
+        let key = previewKey(sdrParams)
+
+        if let detailed = previewDetailedCache.object(forKey: key)?.stats,
+           let counts = previewCountsCache.object(forKey: key) as? [String: Int],
+           let c = counts["c"], let t = counts["t"] {
+            return (c, t, detailed)
+        }
+
+        try Task.checkCancellation()
+        let hdr = try loadHDR(url: sdrParams.url)
+        let measuredHeadroom = getHeadroomForImage(url: sdrParams.url)
+        let sdrBase = try await buildSDRBase(hdr: hdr, params: sdrParams, measuredHeadroom: measuredHeadroom)
+        previewBaseCache.setObject(sdrBase, forKey: key)
+
+        try Task.checkCancellation()
+        let overlay = addColorizedClippingOverlayAndCount(sdr: sdrBase, context: ctx_linear_p3)
+        let clipped = overlay?.clipped ?? 0
+        let total = overlay?.total ?? 0
+        let detailed = overlay?.detailedStats
+        if let detailed {
+            previewDetailedCache.setObject(DetailedStatsBox(detailed), forKey: key)
+            previewCountsCache.setObject(["c": clipped, "t": total] as NSDictionary, forKey: key)
+        }
+        return (clipped, total, detailed)
     }
 
     /// Warms the caches for `image` (raw bytes, headroom, percentile CDF, preview base/overlay)
@@ -1289,12 +1436,66 @@ class HDRProcessor {
         return (clipped, total)
     }
     
-    nonisolated private func ciImageToNSImage(_ ciImage: CIImage) throws -> NSImage {
-        guard let cgImage = encode_ctx.createCGImage(ciImage, from: ciImage.extent) else {
+    /// Materializes a CIImage into an NSImage. For `hdr == true` the CGImage is created in
+    /// extended-linear Display P3 with a half-float format so it carries true HDR pixels; the
+    /// SwiftUI `Image` then shows them on EDR-capable displays via `.allowedDynamicRange(.high)`.
+    nonisolated private func ciImageToNSImage(_ ciImage: CIImage, hdr: Bool = false) throws -> NSImage {
+        let cg: CGImage?
+        if hdr {
+            cg = encode_ctx.createCGImage(ciImage,
+                                          from: ciImage.extent,
+                                          format: .RGBAh,
+                                          colorSpace: linear_p3)
+        } else {
+            cg = encode_ctx.createCGImage(ciImage, from: ciImage.extent)
+        }
+        guard let cgImage = cg else {
             throw ProcessingError.imageConversionFailed
         }
         let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: ciImage.extent.width, height: ciImage.extent.height))
         return nsImage
+    }
+
+    /// Reconstructs the HDR image the export would produce (SDR base + gain map) entirely in
+    /// memory: encode to an in-memory HEIF (skipping the on-disk write + ISO conversion), then
+    /// decode back with `.expandToHDR`. Used by the `.finalOutput` preview to validate fidelity.
+    nonisolated private func reconstructHDRFromGainMap(sdrBase: CIImage, hdr: CIImage, gainMapAsRGB: Bool) throws -> CIImage {
+        let options: [CIImageRepresentationOption: Any] = [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
+            CIImageRepresentationOption.hdrImage: hdr,
+            CIImageRepresentationOption.hdrGainMapAsRGB: gainMapAsRGB
+        ]
+        guard let data = encode_ctx.heifRepresentation(of: sdrBase,
+                                                       format: .RGB10,
+                                                       colorSpace: p3_cs,
+                                                       options: options) else {
+            throw ProcessingError.gainMapGenerationFailed
+        }
+        guard let reconstructed = CIImage(data: data, options: [.expandToHDR: true]) else {
+            throw ProcessingError.gainMapExtractionFailed
+        }
+        return reconstructed
+    }
+
+    /// Extracts the monochrome gain map as a standalone grayscale CIImage for the `.gainMap`
+    /// preview. Always uses the luma path (regardless of the user's RGB setting), because the
+    /// RGB gain map is not exposed as an extractable auxiliary image.
+    nonisolated private func extractGainMapImage(sdrBase: CIImage, hdr: CIImage) throws -> CIImage {
+        let options: [CIImageRepresentationOption: Any] = [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
+            CIImageRepresentationOption.hdrImage: hdr,
+            CIImageRepresentationOption.hdrGainMapAsRGB: false
+        ]
+        guard let data = encode_ctx.heifRepresentation(of: sdrBase,
+                                                       format: .RGB10,
+                                                       colorSpace: p3_cs,
+                                                       options: options) else {
+            throw ProcessingError.gainMapGenerationFailed
+        }
+        guard let gainMap = CIImage(data: data, options: [.auxiliaryHDRGainMap: true]) else {
+            throw ProcessingError.gainMapExtractionFailed
+        }
+        return gainMap
     }
     
     /// Computes the histogram for the SDR output (no caching; always recomputed).

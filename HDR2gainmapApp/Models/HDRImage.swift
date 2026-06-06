@@ -18,6 +18,10 @@ class HDRImage: Identifiable {
     var previewImage: NSImage?
     var isProcessing = false
     var lastError: String?
+
+    // User "ready for export" flag (toggled with the M key). Workflow memo, persisted in the
+    // settings profile. Not a tone-mapping setting, so it lives here, not in ProcessingSettings.
+    var isMarked = false
     
     // Global metadata cache (key: file URL, value: extracted metadata).
     private static var metadataCache = [URL: ImageMetadata]()

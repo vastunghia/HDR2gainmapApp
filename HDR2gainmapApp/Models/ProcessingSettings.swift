@@ -41,6 +41,22 @@ class ProcessingSettings {
     /// Target headroom value: If nil, uses default of 1.0 (SDR).
     var targetHeadroom: Float? = nil
     
+    /// Whether the image's tone-mapping/export settings differ from the defaults — drives the
+    /// "modified" thumbnail badge. Mode-aware so that "Reset defaults" leaves it false (the reset
+    /// writes concrete values into the unused direct/target fields, which we deliberately ignore).
+    var isModifiedFromDefaults: Bool {
+        switch sourceHeadroomMethod {
+        case .peakMax:
+            if tonemapRatio != Self.defaultTonemapRatio { return true }
+        case .percentile, .direct:
+            return true  // not the default (Peak Max) method
+        }
+        if adjustTargetHeadroom { return true }
+        if gainMapAsRGB { return true }
+        if !filenameSuffix.isEmpty { return true }
+        return false
+    }
+
     /// Restores defaults for all parameters
     func resetDefaults(measuredHeadroom: Float) {
         // Reset source headroom parameters for all methods

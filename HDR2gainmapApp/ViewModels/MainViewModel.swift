@@ -28,7 +28,32 @@ class MainViewModel {
     
     // Preview generated for the selected image
     var currentPreview: NSImage?
-    
+
+    // HDR CIImage backing the preview for the HDR views (input / final output), rendered through
+    // the EDR Metal path. nil for SDR / gain-map views (those use the NSImage above).
+    var currentPreviewCIImage: CIImage?
+
+    // Which view the preview pane shows (SDR tone-map / HDR input / final output / gain map).
+    // Global viewing state, not persisted and not part of per-image ProcessingSettings.
+    var previewMode: PreviewMode = .sdrTonemapped
+
+    // Pixel-peeping zoom state for the Metal display path. A click zooms toward `zoomAnchorUnit`
+    // (top-left unit coordinate in the image); a second click resets to fit.
+    var isZoomed = false
+    var zoomAnchorUnit = CGPoint(x: 0.5, y: 0.5)
+
+    /// Zoom in toward a point given as a top-left unit coordinate (0…1) within the image.
+    func zoom(toUnitPoint p: CGPoint) {
+        zoomAnchorUnit = CGPoint(x: min(max(p.x, 0), 1), y: min(max(p.y, 0), 1))
+        isZoomed = true
+    }
+
+    /// Return to aspect-fit.
+    func resetZoom() { isZoomed = false }
+
+    /// Toggles the "ready for export" flag on the selected image (M key).
+    func toggleMarkForSelected() { selectedImage?.isMarked.toggle() }
+
     // UI state
     var isLoadingPreview = false
     var isLoadingNewImage = false
@@ -165,6 +190,7 @@ class MainViewModel {
                 for entry in profile.images {
                     if let image = imagesByName[entry.fileName] {
                         image.settings.applyCoreDTO(entry.settings)
+                        image.isMarked = entry.isMarked ?? false
                     } else {
                         missing.append(entry.fileName)
                     }
@@ -233,6 +259,7 @@ class MainViewModel {
         self.previewError = nil
         self.currentPreview = nil
         self.clippingStats = nil
+        self.isZoomed = false   // a new image starts at fit
 
         // Generate the preview first.
         let tPrev = Prof.tic()
@@ -398,12 +425,15 @@ class MainViewModel {
         self.isLoadingPreview = true
         self.previewError = nil
         self.currentPreview = nil
+        self.currentPreviewCIImage = nil
         self.clippingStats = nil
         self.detailedClippingStats = nil
 
+        let mode = self.previewMode
+
         do {
             // print("   → Generating preview from processor...")
-            let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total, detailedStats in
+            let preview = try await processor.generatePreview(for: image, mode: mode) { [weak self] clipped, total, detailedStats in
                 Task { @MainActor in
                     if total > 0 {
                         self?.clippingStats = ClippingStats(clipped: clipped, total: total)
@@ -414,10 +444,24 @@ class MainViewModel {
                     }
                 }
             }
-            
+
             self.currentPreview = preview
+            // The CIImage shown by the Metal display path (now used for all views: it activates EDR
+            // for HDR content and enables pixel-peeping zoom uniformly).
+            self.currentPreviewCIImage = processor.displayPreviewCIImage(for: image, mode: mode)
             self.isLoadingPreview = false
             // print("   ✅ Preview generated: \(Int(preview.size.width))x\(Int(preview.size.height))")
+
+            // Clipping stats describe the SDR output, so the legend & clipped-pixel count stay
+            // available in every view. In SDR mode they arrive via the callback above; in the other
+            // views, compute them here (cache-shared with the SDR render).
+            if mode != .sdrTonemapped {
+                let params = processor.previewParams(url: image.url, settings: image.settings)
+                if let s = try? await processor.sdrClippingStats(for: params), s.total > 0 {
+                    self.clippingStats = ClippingStats(clipped: s.clipped, total: s.total)
+                    self.detailedClippingStats = s.detailed
+                }
+            }
             
             //            if let s = self.clippingStats {
             //                print("   📊 Clipping: \(s.clipped)/\(s.total) = \(String(format: "%.2f", Double(s.clipped) / Double(s.total) * 100))%")
@@ -427,11 +471,14 @@ class MainViewModel {
             self.isLoadingPreview = false
             self.previewError = error.localizedDescription
             self.currentPreview = nil
+            self.currentPreviewCIImage = nil
             self.clippingStats = nil
             // print("   ❌ Preview failed: \(error.localizedDescription)")
         }
         
-        // Generate histograms only if requested.
+        // Generate histograms only if requested. They describe the SDR output and HDR input, so
+        // they must track tone-mapping changes regardless of which preview view is shown (e.g.
+        // moving a Source Headroom slider while viewing the Gain Map still changes the SDR output).
         if refreshHistograms {
             // print("   → Now calling generateHistograms()...")
             await generateHistograms()
@@ -457,9 +504,11 @@ class MainViewModel {
             return
         }
         
+        let mode = self.previewMode
+
         Task {
             do {
-                let preview = try await processor.generatePreview(for: image) { [weak self] clipped, total, detailedStats in  // ✅ Added detailedStats
+                let preview = try await processor.generatePreview(for: image, mode: mode) { [weak self] clipped, total, detailedStats in  // ✅ Added detailedStats
                     Task { @MainActor in
                         if total > 0 {
                             self?.clippingStats = ClippingStats(clipped: clipped, total: total)
@@ -470,11 +519,22 @@ class MainViewModel {
                         }
                     }
                 }
-                
+
                 self.currentPreview = preview
+                self.currentPreviewCIImage = processor.displayPreviewCIImage(for: image, mode: mode)
             } catch {
                 // Handle error
             }
+        }
+    }
+
+    /// Regenerates the preview when the user switches the view mode (segmented picker).
+    /// Histograms are not refreshed here: switching the view doesn't change the tone-mapping
+    /// parameters, so the current histograms already match the SDR output.
+    func handlePreviewModeChange() {
+        guard let image = self.selectedImage else { return }
+        Task {
+            await generatePreview(for: image, refreshHistograms: false)
         }
     }
     
@@ -632,8 +692,13 @@ class MainViewModel {
         let folderName = folderURL?.lastPathComponent ?? "images"
 
         let entries: [ImageSettingsEntry] = images.compactMap { image in
-            guard let dto = image.settings.makeCoreDTO() else { return nil }
-            return ImageSettingsEntry(fileName: image.url.lastPathComponent, settings: dto)
+            let dto = image.settings.makeCoreDTO()
+            // Persist an entry when the settings differ from defaults OR the image is marked
+            // (so a marked-but-default image still round-trips its flag).
+            guard dto != nil || image.isMarked else { return nil }
+            return ImageSettingsEntry(fileName: image.url.lastPathComponent,
+                                      settings: dto ?? CoreSettingsDTO(),
+                                      isMarked: image.isMarked ? true : nil)
         }
 
         let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>"
