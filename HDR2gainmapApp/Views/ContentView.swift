@@ -114,32 +114,89 @@ struct MainInterfaceView: View {
     private let minRightPanelWidth: CGFloat = 300
     private let maxRightPanelWidth: CGFloat = 600
 
+    // Comparison help dialog (shown on entering Compare unless dismissed permanently).
+    @AppStorage("hideComparisonHelp") private var hideComparisonHelp = false
+    @State private var showComparisonHelp = false
+
+    /// A preview-mode chip — identical in both modes. In Single it's tappable (selected highlighted);
+    /// in Compare it's draggable onto a half of the preview.
+    @ViewBuilder
+    private func previewChip(_ mode: PreviewMode) -> some View {
+        let isSelected = !viewModel.isComparison && viewModel.previewMode == mode
+        let chip = Text(mode.displayName)
+            .font(.caption)
+            .foregroundStyle(isSelected ? Color.white : Color.primary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(isSelected ? Color.accentColor : Color.secondary.opacity(0.15)))
+            .overlay(Capsule().strokeBorder(.secondary.opacity(0.3), lineWidth: 0.5))
+            .contentShape(Capsule())
+
+        if viewModel.isComparison {
+            chip.draggable(mode.rawValue)
+        } else {
+            chip.onTapGesture {
+                viewModel.previewMode = mode
+                viewModel.handlePreviewModeChange()
+            }
+        }
+    }
+
     var body: some View {
         GeometryReader { geometry in
             HStack(spacing: 0) {
                 // Left: preview + thumbnail bar.
-                VStack(spacing: 0) {
-                    // View-mode switcher (which image the preview pane shows).
-                    Picker("View", selection: $viewModel.previewMode) {
-                        ForEach(PreviewMode.allCases, id: \.self) { mode in
-                            Text(mode.displayName).tag(mode)
+                VStack(alignment: .leading, spacing: 0) {
+                    // Single vs Compare (double view) switch.
+                    Text("Select preview mode")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 8)
+
+                    Picker("Mode", selection: Binding(
+                        get: { viewModel.isComparison },
+                        set: { on in
+                            viewModel.setComparison(on)
+                            if on && !hideComparisonHelp { showComparisonHelp = true }
                         }
+                    )) {
+                        Text("Single").tag(false)
+                        Text("Compare").tag(true)
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
+                    .fixedSize()
                     .padding(.horizontal, 12)
-                    .padding(.top, 6)
-                    .padding(.bottom, 4)
+                    .padding(.top, 4)
                     .disabled(!viewModel.isCurrentImageValid)
-                    .onChange(of: viewModel.previewMode) {
-                        viewModel.handlePreviewModeChange()
+
+                    // Preview selector: the same chips in both modes (no layout jump). In Single a
+                    // click selects the view; in Compare each chip is dragged onto a half.
+                    Text("Available previews")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 12)
+                        .padding(.top, 10)
+
+                    FlowLayout(horizontalSpacing: 6, verticalSpacing: 6) {
+                        ForEach(PreviewMode.allCases, id: \.self) { mode in
+                            previewChip(mode)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 4)
+                    .disabled(!viewModel.isCurrentImageValid)
 
                     // Display-headroom readout. Always shown so the layout doesn't jump; the numbers
                     // read "n/a" in the non-EDR views (SDR / Gain Map), where EDR isn't used. It's a
                     // display property, not an image one, so it lives here, not in the MetadataBar.
-                    EDRHeadroomIndicator(active: viewModel.previewMode.isHDR)
+                    EDRHeadroomIndicator(active: viewModel.isComparison
+                        ? (viewModel.comparisonLeftMode.isHDR || viewModel.comparisonRightMode.isHDR)
+                        : viewModel.previewMode.isHDR)
                         .padding(.horizontal, 12)
+                        .padding(.top, 6)
                         .padding(.bottom, 6)
 
                     Divider()
@@ -153,6 +210,9 @@ struct MainInterfaceView: View {
                     // Thumbnail bar (bottom).
                     ThumbnailBar(viewModel: viewModel)
                         .frame(height: 140)
+                }
+                .sheet(isPresented: $showComparisonHelp) {
+                    ComparisonHelpView(dontShowAgain: $hideComparisonHelp)
                 }
 
                 // Draggable divider

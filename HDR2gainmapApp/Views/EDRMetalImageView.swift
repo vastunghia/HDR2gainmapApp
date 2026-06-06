@@ -22,6 +22,13 @@ struct EDRMetalImageView: NSViewRepresentable {
     /// Zoom magnification in percent of actual pixels (100 = 1 image px : 1 point).
     let zoomPercent: Int
 
+    /// Comparison mode: when true, `ciImage` is ignored and `leftImage` / `rightImage` are drawn
+    /// split at `splitFraction` (0…1 of the width, left of the divider = leftImage).
+    var isComparison: Bool = false
+    var leftImage: CIImage? = nil
+    var rightImage: CIImage? = nil
+    var splitFraction: CGFloat = 0.5
+
     /// Whether this Mac has a Metal device (otherwise callers should fall back to SwiftUI `Image`).
     static var isSupported: Bool { MTLCreateSystemDefaultDevice() != nil }
 
@@ -67,6 +74,10 @@ struct EDRMetalImageView: NSViewRepresentable {
         coordinator.isZoomed = isZoomed
         coordinator.zoomAnchorUnit = zoomAnchorUnit
         coordinator.zoomPercent = zoomPercent
+        coordinator.isComparison = isComparison
+        coordinator.leftImage = leftImage
+        coordinator.rightImage = rightImage
+        coordinator.splitFraction = splitFraction
     }
 
     final class Coordinator: NSObject, MTKViewDelegate {
@@ -82,6 +93,10 @@ struct EDRMetalImageView: NSViewRepresentable {
         var isZoomed: Bool = false
         var zoomAnchorUnit: CGPoint = CGPoint(x: 0.5, y: 0.5)
         var zoomPercent: Int = 200
+        var isComparison: Bool = false
+        var leftImage: CIImage?
+        var rightImage: CIImage?
+        var splitFraction: CGFloat = 0.5
 
         override init() {
             let device = MTLCreateSystemDefaultDevice()
@@ -117,7 +132,24 @@ struct EDRMetalImageView: NSViewRepresentable {
             let background = CIImage(color: .clear).cropped(to: dst)
 
             let composited: CIImage
-            if let image, image.extent.width > 0, image.extent.height > 0 {
+            if isComparison {
+                // Two views split at `splitFraction`: left image on the left of the divider, right
+                // image on the right. Each is placed with the shared zoom/anchor, then clipped to
+                // its half. The divider line itself is a SwiftUI overlay, not drawn here.
+                let splitX = (dst.width * max(0, min(1, splitFraction))).rounded()
+                var layers = background
+                if let right = rightImage, right.extent.width > 0, right.extent.height > 0 {
+                    let placed = place(right, in: dst, view: view)
+                        .cropped(to: CGRect(x: splitX, y: 0, width: dst.width - splitX, height: dst.height))
+                    layers = placed.composited(over: layers)
+                }
+                if let left = leftImage, left.extent.width > 0, left.extent.height > 0 {
+                    let placed = place(left, in: dst, view: view)
+                        .cropped(to: CGRect(x: 0, y: 0, width: splitX, height: dst.height))
+                    layers = placed.composited(over: layers)
+                }
+                composited = layers
+            } else if let image, image.extent.width > 0, image.extent.height > 0 {
                 composited = place(image, in: dst, view: view).composited(over: background)
             } else {
                 composited = background

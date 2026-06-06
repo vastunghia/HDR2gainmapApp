@@ -31,6 +31,7 @@ enum PreviewMode: String, CaseIterable, Sendable {
         case .finalOutput:   return "SDR + Gain Map (Final Output)"
         }
     }
+
 }
 
 /// Bridge between the CLI pipeline and SwiftUI; orchestrates HDR image processing.

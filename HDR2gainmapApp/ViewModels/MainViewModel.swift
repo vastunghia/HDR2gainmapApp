@@ -42,6 +42,15 @@ class MainViewModel {
     var isZoomed = false
     var zoomAnchorUnit = CGPoint(x: 0.5, y: 0.5)
 
+    // Comparison ("double view") state. When `isComparison` is true the preview shows
+    // `comparisonLeftMode` and `comparisonRightMode` split at `comparisonSplit` (0…1 of width).
+    var isComparison = false
+    var comparisonLeftMode: PreviewMode = .hdrInput
+    var comparisonRightMode: PreviewMode = .finalOutput
+    var comparisonSplit: CGFloat = 0.5
+    var currentLeftCIImage: CIImage?
+    var currentRightCIImage: CIImage?
+
     /// Zoom in toward a point given as a top-left unit coordinate (0…1) within the image.
     func zoom(toUnitPoint p: CGPoint) {
         zoomAnchorUnit = CGPoint(x: min(max(p.x, 0), 1), y: min(max(p.y, 0), 1))
@@ -53,6 +62,51 @@ class MainViewModel {
 
     /// Toggles the "ready for export" flag on the selected image (M key).
     func toggleMarkForSelected() { selectedImage?.isMarked.toggle() }
+
+    // MARK: - Comparison (double view)
+
+    /// Switches between single and comparison view, regenerating the preview.
+    func setComparison(_ on: Bool) {
+        isComparison = on
+        isZoomed = false
+        guard let image = self.selectedImage else { return }
+        Task { await generatePreview(for: image, refreshHistograms: true) }
+    }
+
+    /// Assigns a view to the left or right side (drag & drop) and regenerates just that side.
+    func assignComparison(_ mode: PreviewMode, toLeft: Bool) {
+        if toLeft { comparisonLeftMode = mode } else { comparisonRightMode = mode }
+        guard let image = self.selectedImage else { return }
+        Task {
+            let img = await renderedCIImage(for: image, mode: mode)
+            if toLeft { self.currentLeftCIImage = img } else { self.currentRightCIImage = img }
+        }
+    }
+
+    /// Renders (if needed) and returns the display CIImage for a view. Shares the existing
+    /// preview pipeline & caches via `generatePreview` + `displayPreviewCIImage`.
+    private func renderedCIImage(for image: HDRImage, mode: PreviewMode) async -> CIImage? {
+        _ = try? await processor.generatePreview(for: image, mode: mode, reportClipping: nil)
+        return processor.displayPreviewCIImage(for: image, mode: mode)
+    }
+
+    /// Regenerates both comparison sides for the current settings.
+    private func refreshComparison(for image: HDRImage) async {
+        self.currentLeftCIImage = await renderedCIImage(for: image, mode: comparisonLeftMode)
+        self.currentRightCIImage = await renderedCIImage(for: image, mode: comparisonRightMode)
+    }
+
+    /// Fetches the SDR-output clipping stats (independent of the shown view) and publishes them.
+    private func refreshClippingStats(for image: HDRImage) async {
+        let params = processor.previewParams(url: image.url, settings: image.settings)
+        if let s = try? await processor.sdrClippingStats(for: params), s.total > 0 {
+            self.clippingStats = ClippingStats(clipped: s.clipped, total: s.total)
+            self.detailedClippingStats = s.detailed
+        } else {
+            self.clippingStats = nil
+            self.detailedClippingStats = nil
+        }
+    }
 
     // UI state
     var isLoadingPreview = false
@@ -258,6 +312,8 @@ class MainViewModel {
         // Reset previous state
         self.previewError = nil
         self.currentPreview = nil
+        self.currentLeftCIImage = nil
+        self.currentRightCIImage = nil
         self.clippingStats = nil
         self.isZoomed = false   // a new image starts at fit
 
@@ -418,7 +474,18 @@ class MainViewModel {
             // print("   ⚠️ No image selected")
             return
         }
-        
+
+        // Comparison ("double view") path: regenerate both sides + SDR stats; skip the single render.
+        if isComparison {
+            self.isLoadingPreview = true
+            self.previewError = nil
+            await refreshComparison(for: image)
+            await refreshClippingStats(for: image)
+            self.isLoadingPreview = false
+            if refreshHistograms { await generateHistograms() }
+            return
+        }
+
         // print("   📸 Image: \(image.url.lastPathComponent)")
         // print("   ⚙️ Settings: \(image.settings.method)")
         

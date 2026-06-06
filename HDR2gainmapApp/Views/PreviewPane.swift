@@ -21,26 +21,36 @@ struct PreviewPane: View {
                 // Background always visible (not covered by overlay)
                 Color(nsColor: .textBackgroundColor)
                 
-                if let preview = viewModel.currentPreview {
+                if showImageArea {
                     // Preview is available - with conditional overlay above
                     GeometryReader { geo in
-                        previewContent(preview: preview)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .contentShape(Rectangle())
-                            .gesture(
-                                // Click toward a point to zoom in / click again to reset; while
-                                // zoomed, drag to pan.
-                                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                                    .onChanged { value in
-                                        handleDragChanged(value, in: geo.size)
-                                    }
-                                    .onEnded { value in
-                                        handleDragEnded(value, in: geo.size)
-                                    }
-                            )
-                            .onContinuousHover(coordinateSpace: .local) { phase in
-                                updateHoverCursor(phase, in: geo.size)
+                        ZStack {
+                            previewContent()
+                                .frame(width: geo.size.width, height: geo.size.height)
+                            if viewModel.isComparison {
+                                comparisonOverlays(in: geo.size)
                             }
+                        }
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .coordinateSpace(.named(Self.previewSpace))
+                        .contentShape(Rectangle())
+                        .gesture(
+                            // Click toward a point to zoom in / click again to reset; while
+                            // zoomed, drag to pan.
+                            DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                                .onChanged { value in
+                                    handleDragChanged(value, in: geo.size)
+                                }
+                                .onEnded { value in
+                                    handleDragEnded(value, in: geo.size)
+                                }
+                        )
+                        .onContinuousHover(coordinateSpace: .local) { phase in
+                            updateHoverCursor(phase, in: geo.size)
+                        }
+                        .dropDestination(for: String.self) { items, location in
+                            handleDrop(items, at: location, in: geo.size)
+                        }
                     }
                         .overlay(
                             Group {
@@ -147,11 +157,32 @@ struct PreviewPane: View {
         }
     }
 
+    /// Coordinate space name for the preview area (used by the divider grip drag).
+    private static let previewSpace = "previewArea"
+
+    /// Whether to show the image surface: in comparison whenever an image is selected; in single
+    /// when a preview is ready.
+    private var showImageArea: Bool {
+        viewModel.isComparison ? (viewModel.selectedImage != nil) : (viewModel.currentPreview != nil)
+    }
+
     /// The image surface: the Metal renderer (all views — activates EDR for HDR and supports zoom),
     /// with a SwiftUI `Image` fallback when Metal/CIImage is unavailable.
     @ViewBuilder
-    private func previewContent(preview: NSImage) -> some View {
-        if EDRMetalImageView.isSupported, let ciImage = viewModel.currentPreviewCIImage {
+    private func previewContent() -> some View {
+        if viewModel.isComparison {
+            EDRMetalImageView(
+                ciImage: nil,
+                isHDR: viewModel.comparisonLeftMode.isHDR || viewModel.comparisonRightMode.isHDR,
+                isZoomed: viewModel.isZoomed,
+                zoomAnchorUnit: viewModel.zoomAnchorUnit,
+                zoomPercent: zoomLevel,
+                isComparison: true,
+                leftImage: viewModel.currentLeftCIImage,
+                rightImage: viewModel.currentRightCIImage,
+                splitFraction: viewModel.comparisonSplit
+            )
+        } else if EDRMetalImageView.isSupported, let ciImage = viewModel.currentPreviewCIImage {
             EDRMetalImageView(
                 ciImage: ciImage,
                 isHDR: viewModel.previewMode.isHDR,
@@ -159,19 +190,90 @@ struct PreviewPane: View {
                 zoomAnchorUnit: viewModel.zoomAnchorUnit,
                 zoomPercent: zoomLevel
             )
-        } else {
+        } else if let preview = viewModel.currentPreview {
             Image(nsImage: preview)
                 .resizable()
                 .allowedDynamicRange(viewModel.previewMode.isHDR ? .high : .standard)
                 .aspectRatio(contentMode: .fit)
+        } else {
+            Color.clear
         }
+    }
+
+    // MARK: - Comparison overlays
+
+    /// Per-side labels + the draggable divider, drawn on top of the comparison render.
+    @ViewBuilder
+    private func comparisonOverlays(in size: CGSize) -> some View {
+        // Labels (non-interactive) at the top of each half.
+        ZStack(alignment: .topLeading) {
+            Color.clear
+            comparisonLabel(viewModel.comparisonLeftMode.displayName).padding(8)
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .overlay(alignment: .topTrailing) {
+            comparisonLabel(viewModel.comparisonRightMode.displayName).padding(8)
+        }
+        .allowsHitTesting(false)
+
+        // Divider line (non-interactive) at the split.
+        Rectangle()
+            .fill(.white.opacity(0.9))
+            .frame(width: 1.5, height: size.height)
+            .shadow(color: .black.opacity(0.5), radius: 1)
+            .position(x: viewModel.comparisonSplit * size.width, y: size.height / 2)
+            .allowsHitTesting(false)
+
+        // Divider grip (draggable). High priority so it wins over the pan/zoom gesture beneath.
+        Circle()
+            .fill(.white)
+            .frame(width: 26, height: 26)
+            .overlay(
+                Image(systemName: "arrow.left.and.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.black)
+            )
+            .shadow(color: .black.opacity(0.4), radius: 2)
+            .position(x: viewModel.comparisonSplit * size.width, y: size.height / 2)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.previewSpace))
+                    .onChanged { v in
+                        viewModel.comparisonSplit = min(max(v.location.x / size.width, 0), 1)
+                    }
+            )
+    }
+
+    private func comparisonLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .fontWeight(.medium)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(.black.opacity(0.5)))
+    }
+
+    /// Handles a chip dropped onto the preview: assigns it to the left or right half by drop x.
+    private func handleDrop(_ items: [String], at location: CGPoint, in size: CGSize) -> Bool {
+        guard viewModel.isComparison,
+              let raw = items.first,
+              let mode = PreviewMode(rawValue: raw) else { return false }
+        viewModel.assignComparison(mode, toLeft: location.x < size.width / 2)
+        return true
+    }
+
+    /// Reference image extent (pixels) for gesture geometry: single preview, else a comparison side.
+    private func referenceExtent() -> CGRect? {
+        if let e = viewModel.currentPreviewCIImage?.extent, e.width > 0, e.height > 0 { return e }
+        if let e = viewModel.currentLeftCIImage?.extent, e.width > 0, e.height > 0 { return e }
+        if let e = viewModel.currentRightCIImage?.extent, e.width > 0, e.height > 0 { return e }
+        return nil
     }
 
     /// The aspect-fit rect (in local points) where the image is drawn, or nil if there's no image.
     /// Same min-scale the renderer uses, so gesture and render stay aligned.
     private func imageDisplayRect(in size: CGSize) -> CGRect? {
-        guard let ext = viewModel.currentPreviewCIImage?.extent,
-              ext.width > 0, ext.height > 0 else { return nil }
+        guard let ext = referenceExtent() else { return nil }
         let scale = min(size.width / ext.width, size.height / ext.height)
         let w = ext.width * scale
         let h = ext.height * scale
@@ -180,7 +282,7 @@ struct PreviewPane: View {
 
     /// Image size in pixels, or nil if no image.
     private func imageExtentSize() -> CGSize? {
-        guard let ext = viewModel.currentPreviewCIImage?.extent, ext.width > 0, ext.height > 0 else { return nil }
+        guard let ext = referenceExtent() else { return nil }
         return CGSize(width: ext.width, height: ext.height)
     }
 
