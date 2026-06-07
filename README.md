@@ -1,49 +1,157 @@
 <p align="center">
-  <img width="512" height="512" src="HDR2gainmapApp/Assets.xcassets/AppIcon.appiconset/AppIcon_512.png">
+  <img width="160" height="160" src="HDR2gainmapApp/Assets.xcassets/AppIcon.appiconset/AppIcon_512.png">
 </p>
 
-# HDR2gainmap App
+<h1 align="center">HDR2gainmap App</h1>
 
-A native macOS application for **converting HDR PNG images** (Display P3 PQ) to **HEIC with embedded gain maps**, providing full creative control over the SDR tone-mapping process while ensuring **seamless compatibility across the Apple ecosystem**.
+<p align="center">
+  <b>Take full creative control of your HDR photos and export them as gain-map HEICs that look right everywhere — iPhone, Mac, iCloud, and the web.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/vastunghia/HDR2gainmapApp/releases/latest"><img src="https://img.shields.io/github/v/release/vastunghia/HDR2gainmapApp?label=latest%20release&sort=semver" alt="Latest release"></a>
+  <a href="https://github.com/vastunghia/HDR2gainmapApp/releases"><img src="https://img.shields.io/github/downloads/vastunghia/HDR2gainmapApp/total?label=downloads" alt="Downloads"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%2015%2B-blue" alt="Platform macOS 15+">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/vastunghia/HDR2gainmapApp" alt="License: MIT"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/vastunghia/HDR2gainmapApp/releases/latest"><b>⬇️ Download the latest release</b></a>
+</p>
 
 ![HDR2gainmap App Screenshot](screenshots/screenshot.png)
 
-## Overview
+## The problem
 
-HDR2gainmap App is a SwiftUI-based graphical frontend for converting pure (i.e. gainmap-less) HDR images into Apple-compatible HEIC files **with gain maps**. Unlike automated conversion tools, this application gives you **full creative control** over how your HDR content is tone-mapped to SDR, allowing you to craft the perfect base SDR image for devices that don't support HDR, while preserving the full HDR experience for compatible displays thanks to the presence of the gain map.
+Modern Apple devices and most web browsers can show **true HDR photos** using a *gain map*: an SDR
+base image plus a recipe to reconstruct the HDR rendition on capable displays. The catch is getting
+there. Export HDR from your editor and you typically end up with one of two bad outcomes — a flat SDR
+file that throws away your highlights, or an HDR file whose gain map gets **stripped the moment it
+syncs through iCloud** or opened by non-Apple software.
 
-The resulting HEIC files work seamlessly (i.e. **the SDR or the HDR version of the image will be displayed correctly based on the user's display capability**) across:
+**HDR2gainmap App** closes that gap. It takes a pure HDR PNG (Display P3 PQ, 16-bit) and writes a
+**HEIC with an embedded, standards-based gain map** — the same ISO 21496-1 format Apple itself writes
+for native HDR captures. Crucially, it gives you **full creative control over how the HDR is
+tone-mapped to the SDR base**, so the photo looks exactly how you want it on *both* HDR and SDR
+displays — and survives iCloud sync intact.
 
-- **all Apple ecosystem**:
-	- macOS (Photos, Preview, Safari, QuickLook)
-	- iOS and iPadOS (Photos, Files, Safari)
-	- iCloud Photo Library (sync will not result in stripping of gain maps as is the case with other methods!)
-	- Any app that uses Apple's native image rendering pipeline
-- non-Apple software: any software implementing ISO 21496 specification for gain maps (e.g. **most browsers at the time of writing**)
+This is the tail end of a real photographer's workflow: **shoot RAW → edit in HDR (e.g. Lightroom) →
+export HDR PNG → HDR2gainmap App → a gain-map HEIC you can drop straight into your iCloud library.**
 
-### Key Features
+## Who is it for
+
+- **Photographers shooting and editing in HDR** (Lightroom HDR and similar) who want their work to
+  display as true HDR across their devices.
+- **Anyone in the Apple ecosystem** who needs HDR photos that sync through iCloud without losing the
+  gain map, and render correctly in Photos, Preview, Safari, and QuickLook.
+- **People who care about cross-platform compatibility** — output also works in standards-compliant
+  non-Apple software (most modern browsers) thanks to ISO 21496-1 gain maps.
+- **Anyone who wants the SDR base to look good**, not just the HDR — with precise, visual control
+  over tone-mapping instead of a black-box automatic conversion.
+
+## Highlights
+
+- **🎛️ Full creative control of the SDR base** — three tone-mapping methods (Peak Max, Percentile,
+  Direct) let you decide exactly how HDR highlights roll off into SDR, instead of accepting whatever
+  an automatic converter produces.
+- **👁️ See every stage, live** — a multi-view preview switches between **HDR Input**, **Tonemapped
+  SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)**, all updating in real time as you drag
+  the sliders. A draggable **comparison slider** wipes between any two views.
+- **🌟 True HDR (EDR) preview** — on HDR-capable displays, highlights are shown with real headroom,
+  with a live readout of how much display headroom you currently have (in stops).
+- **📦 Standards-based, sync-safe output** — **ISO 21496-1 gain maps** recognized across the Apple
+  ecosystem *and* by standards-compliant non-Apple software, with original metadata preserved.
+- **📊 Lightroom-style histograms** — split-axis HDR/SDR histograms with always-on clipping
+  statistics and an interactive clipping legend.
+- **🗂️ Batch-friendly** — batch export with progress tracking, plus exportable/importable
+  per-image "develop" settings profiles to resume work or share a look across machines.
+
+![HDR2gainmap App — tone-mapping sliders](screenshots/screenshot_sliders.png)
+
+## Full feature list
+
+<details>
+<summary><b>Preview &amp; inspection</b></summary>
+
+- **Multi-view preview**: switch the preview between four live views — **HDR Input**, **Tonemapped
+  SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)** — to inspect the HDR source, your SDR
+  base, the gain map itself, and the *actual reconstructed export* before you write a single file.
+- **True HDR (EDR) preview** on HDR-capable displays, with a live **Display Headroom (current /
+  potential)** readout in stops, so you can judge highlights as they will really appear.
+- **Image comparison slider**: place any two of the four views side by side with a draggable divider
+  (e.g. *HDR Input* vs *Final Output*) to spot differences directly.
+- **Pixel-peeping zoom** (100 % / 200 % / 400 %, configurable) with click-to-zoom and drag-to-pan,
+  available in every view.
+- **Real-time clipped-pixel overlay** (multi-color visualization highlighting which channels are
+  being clipped).
+- **Live HDR and SDR histograms** with a Lightroom-style split-axis layout (sRGB curve for SDR,
+  logarithmic for HDR) and an always-on clipping readout.
+- **Detailed clipping statistics** (always shown, including the count of clipped pixels by maxRGB)
+  with an interactive legend window.
+
+</details>
+
+<details>
+<summary><b>Tone-mapping control</b></summary>
 
 - **Three tone-mapping control methods** for precise control over SDR rendering (more info below):
-  - **Peak Max**: Most intuitive, high-level control
-  - **Percentile**: Lets you control directly how many pixels will be clipped in the final SDR image
-  - **Direct**: Low-level control allowing you to manually select source / target headroom specification
-- **Real-time preview** with optional clipped pixel overlay (multi-color visualization highlighting which channels are being clipped)
-- **Multi-view preview**: switch the preview between four live views — **HDR Input**, **Tonemapped SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)** — to inspect the HDR source, your SDR base, the gain map itself, and the *actual reconstructed export* before you write a single file
-- **True HDR (EDR) preview** on HDR-capable displays, with a live **Display Headroom (current / potential)** readout in stops, so you can judge highlights as they will really appear
-- **Image comparison slider**: place any two of the four views side by side with a draggable divider (e.g. *HDR Input* vs *Final Output*) to spot differences directly
-- **Pixel-peeping zoom** (100 % / 200 % / 400 %, configurable) with click-to-zoom and drag-to-pan, available in every view
-- **Live HDR and SDR histograms** with a Lightroom-style split-axis layout (sRGB curve for SDR, logarithmic for HDR) and an always-on clipping readout
-- **Detailed clipping statistics** (always shown, including the count of clipped pixels by maxRGB) with an interactive legend window
-- **Batch export** with progress tracking and possibility to append a string of your choice to all file names
-- **Export / import development settings**: save the per-image tone-mapping "develop" settings of a whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing a look across machines (only images you actually customized are stored; any images listed in the profile but missing from the folder are reported on import)
-- **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view)
-- **Background pre-loading**: when you select an image, its neighbours (next and previous) are warmed in the background so sequential browsing feels near-instant — without slowing down work on the current image
-- **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are currently resident in memory (and will therefore load instantly); it updates live as images are cached and as older ones are evicted
-- **Thumbnail status badges**: a **"settings modified"** badge flags thumbnails whose tone-mapping differs from the defaults, and a user-toggled **"ready for export"** flag (press the **M** key on the current image) lets you mark the shots you have finished — the flag is persisted in the settings profile
-- **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software
-- **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×)
-- **Metadata preserved** in output files
-- **Metal-accelerated** histogram and peak luminance calculation
+  - **Peak Max**: Most intuitive, high-level control.
+  - **Percentile**: Lets you control directly how many pixels will be clipped in the final SDR image.
+  - **Direct**: Low-level control allowing you to manually select source / target headroom.
+
+</details>
+
+<details>
+<summary><b>Output &amp; metadata</b></summary>
+
+- **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR
+  captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
+- **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×).
+- **Metadata preserved** in output files.
+
+</details>
+
+<details>
+<summary><b>Workflow &amp; navigation</b></summary>
+
+- **Batch export** with progress tracking and the option to append a string of your choice to all
+  file names.
+- **Export / import development settings**: save the per-image tone-mapping "develop" settings of a
+  whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing
+  a look across machines (only images you actually customized are stored; any images listed in the
+  profile but missing from the folder are reported on import).
+- **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the
+  previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view).
+- **Thumbnail status badges**: a **"settings modified"** badge flags thumbnails whose tone-mapping
+  differs from the defaults, and a user-toggled **"ready for export"** flag (press the **M** key on
+  the current image) lets you mark the shots you have finished — the flag is persisted in the
+  settings profile.
+- **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are
+  currently resident in memory (and will therefore load instantly); it updates live as images are
+  cached and as older ones are evicted.
+
+</details>
+
+<details>
+<summary><b>Performance</b></summary>
+
+- **Background pre-loading**: when you select an image, its neighbours (next and previous) are warmed
+  in the background so sequential browsing feels near-instant — without slowing down work on the
+  current image.
+- **Metal-accelerated** histogram and peak luminance calculation.
+
+</details>
+
+Where does the output work?
+
+- **Across the entire Apple ecosystem** — the SDR or the HDR version is displayed correctly based on
+  the viewer's display capability:
+  - macOS (Photos, Preview, Safari, QuickLook)
+  - iOS and iPadOS (Photos, Files, Safari)
+  - iCloud Photo Library (sync will **not** strip gain maps, unlike many other methods)
+  - any app that uses Apple's native image rendering pipeline
+- **Non-Apple software** — any software implementing the ISO 21496 specification for gain maps (e.g.
+  most browsers at the time of writing).
 
 ## Input Format Requirements
 
@@ -82,7 +190,7 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 - The slider controls the `ratio` parameter (0.0 = no compression, 1.0 = full compression to SDR)
 - Provides intuitive creative control over highlight roll-off
 
-**In a nuthsell:** drag to the left limit to 'crunch' all pixels into the SDR space / drag to the right limit to leave pixels as they are, ending up with all original pixels brither than standard white HDR being clipped in the final SDR image)
+**In a nutshell:** drag to the left to 'crunch' all pixels into the SDR space; drag to the right to leave pixels as they are, ending up with all original pixels brighter than standard white being clipped in the final SDR image.
 
 **Percentile [applies to Source Headroom only]**
 
@@ -93,7 +201,7 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 - Robust against outliers and specular highlights
 - Uses a non-linear slider mapping for precise control in the 95-99.999% range
 
-**In a nutshell:** lets you specify the percentage of pixels that should result as clipped in the final SDR image. Drag to the left limit to force 0.001% of pixels clipped, drag to the right limit to force 5% of pixels clipped.
+**In a nutshell:** lets you specify the percentage of pixels that should result as clipped in the final SDR image. Drag to the left to force 0.001% of pixels clipped, drag to the right to force 5% of pixels clipped.
 
 **Direct [applies to both Source and Target Headroom]**
 
@@ -104,7 +212,7 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 - Target headroom: defaults to 1.0 (standard SDR), can be adjusted for creative effects
 - Useful for matching specific technical requirements or recreating known tone curves
 
-**In a nutshell:** this control allowing you to manually select source / target headroom specification
+**In a nutshell:** this control lets you manually select source / target headroom specification.
 
 ### 2. Gain Map Generation
 
@@ -196,16 +304,6 @@ Both actions are available from the **File menu** (Export Settings ⇧⌘E / Imp
 from the **export panel**, and — for import — directly from the **start screen**, so you can
 reopen a folder straight from a saved profile.
 
-## Metal Acceleration
-
-The application leverages Metal compute shaders for performance-critical operations:
-
-- **Histogram calculation**: 10-50× faster than CPU implementation
-- **Peak luminance detection**: 10-100× faster than CPU implementation
-- **Percentile CDF generation**: Cached for real-time slider response
-
-Metal acceleration is automatically detected and enabled when available, with graceful CPU fallback.
-
 ## System Requirements
 
 - **macOS 15.x** (Sequoia) or later
@@ -228,6 +326,8 @@ To verify that your exported HEIC files contain valid gain maps and render corre
    - Verify the image syncs and displays correctly on iPhone 12 or later (HDR display required)
 
 ## Building from Source
+
+Most users should just **[download the latest release](https://github.com/vastunghia/HDR2gainmapApp/releases/latest)** — the app is signed and notarized. Build from source only if you want to modify it.
 
 ### Prerequisites
 
@@ -269,6 +369,16 @@ The overlay uses a **multi-color scheme** to identify which channels are clipped
 
 This allows precise diagnosis of clipping issues across the color gamut.
 
+### Metal Acceleration
+
+The application leverages Metal compute shaders for performance-critical operations:
+
+- **Histogram calculation**: 10-50× faster than CPU implementation
+- **Peak luminance detection**: 10-100× faster than CPU implementation
+- **Percentile CDF generation**: Cached for real-time slider response
+
+Metal acceleration is automatically detected and enabled when available, with graceful CPU fallback.
+
 ### Caching Strategy
 
 The application implements multiple cache layers for performance:
@@ -297,7 +407,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 - Originally inspired by the [work of **chemharuka**](https://github.com/chemharuka/toGainMapHDR)
 - Built upon my experience with the development of [a similar CLI tool](https://github.com/vastunghia/HDR2gainmap)
-- Most parts of the code were written by Claude Sonnet 4.5 and a few by ChatGPT 5.x, under my guidance
+- Most of the code was written with the assistance of AI coding tools, under my guidance
 
 ## Support
 
