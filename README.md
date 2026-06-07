@@ -6,7 +6,7 @@
 
 A native macOS application for **converting HDR PNG images** (Display P3 PQ) to **HEIC with embedded gain maps**, providing full creative control over the SDR tone-mapping process while ensuring **seamless compatibility across the Apple ecosystem**.
 
-![HDR2gainmap App Screenshot](screenshots/screenshot_half.png)
+![HDR2gainmap App Screenshot](screenshots/screenshot.png)
 
 ## Overview
 
@@ -28,13 +28,18 @@ The resulting HEIC files work seamlessly (i.e. **the SDR or the HDR version of t
   - **Percentile**: Lets you control directly how many pixels will be clipped in the final SDR image
   - **Direct**: Low-level control allowing you to manually select source / target headroom specification
 - **Real-time preview** with optional clipped pixel overlay (multi-color visualization highlighting which channels are being clipped)
-- **Live HDR and SDR histograms** with split-axis layout (sRGB curve for SDR, logarithmic for HDR)
-- **Detailed clipping statistics** with interactive legend window
+- **Multi-view preview**: switch the preview between four live views — **HDR Input**, **Tonemapped SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)** — to inspect the HDR source, your SDR base, the gain map itself, and the *actual reconstructed export* before you write a single file
+- **True HDR (EDR) preview** on HDR-capable displays, with a live **Display Headroom (current / potential)** readout in stops, so you can judge highlights as they will really appear
+- **Image comparison slider**: place any two of the four views side by side with a draggable divider (e.g. *HDR Input* vs *Final Output*) to spot differences directly
+- **Pixel-peeping zoom** (100 % / 200 % / 400 %, configurable) with click-to-zoom and drag-to-pan, available in every view
+- **Live HDR and SDR histograms** with a Lightroom-style split-axis layout (sRGB curve for SDR, logarithmic for HDR) and an always-on clipping readout
+- **Detailed clipping statistics** (always shown, including the count of clipped pixels by maxRGB) with an interactive legend window
 - **Batch export** with progress tracking and possibility to append a string of your choice to all file names
 - **Export / import development settings**: save the per-image tone-mapping "develop" settings of a whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing a look across machines (only images you actually customized are stored; any images listed in the profile but missing from the folder are reported on import)
 - **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view)
 - **Background pre-loading**: when you select an image, its neighbours (next and previous) are warmed in the background so sequential browsing feels near-instant — without slowing down work on the current image
 - **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are currently resident in memory (and will therefore load instantly); it updates live as images are cached and as older ones are evicted
+- **Thumbnail status badges**: a **"settings modified"** badge flags thumbnails whose tone-mapping differs from the defaults, and a user-toggled **"ready for export"** flag (press the **M** key on the current image) lets you mark the shots you have finished — the flag is persisted in the settings profile
 - **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software
 - **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×)
 - **Metadata preserved** in output files
@@ -129,6 +134,48 @@ Two export settings are configurable in the Preferences window:
 - **HEIC Quality** — the HEIF compression quality (default: 0.95); higher quality produces larger files with better fidelity.
 - **Gain Map Resolution** — whether the gain map is stored at half (½×, the default, matching Apple's native HDR captures) or full (1×) image resolution. A gain map is smooth and low-detail, so half resolution shrinks the file with minimal visual impact.
 
+A preview setting is also available there:
+
+- **Pixel-Peep Zoom Level** — the magnification used by click-to-zoom in the preview (100 % / 200 % / 400 %; 100 % is exact 1:1 pixels).
+
+## Previewing & Inspecting Your Conversion
+
+Crafting a good gain map is an iterative, visual process, so the app lets you inspect every stage of
+the conversion in real time — not just the SDR base.
+
+### Four live views
+
+A segmented selector at the top of the preview column switches the main preview between four views,
+all of which update live (debounced) as you move the tone-mapping sliders:
+
+- **HDR Input** — the original HDR source, rendered in true HDR on capable displays (see EDR below).
+- **Tonemapped SDR** — the SDR base image, with the optional multi-color clipped-pixel overlay.
+- **Gain Map** — the standalone gain map, so you can see exactly where (and how strongly) HDR detail
+  is being encoded.
+- **SDR + Gain Map (Final Output)** — the HDR rendition *reconstructed from the SDR base and the gain
+  map*, i.e. what the exported HEIC will actually look like on an HDR display. This is rebuilt in
+  memory from the same encoder used for export, so it faithfully previews the final result.
+
+### True HDR (EDR) preview
+
+On HDR-capable displays, the HDR views are rendered through a dedicated Metal surface so the system's
+**Extended Dynamic Range** is actually engaged — highlights are shown with real headroom rather than
+tone-mapped down. A live **Display Headroom (current / potential)** readout (in stops) sits under the
+view selector, so you can tell at a glance how much HDR range your display is currently providing.
+
+### Comparison slider
+
+Toggle the **Single / Compare** switch to put two views side by side, split by a draggable divider.
+Drag any of the four view chips onto the left or right half to assign it (the prefilled pairing is
+*HDR Input* vs *Final Output*), then drag the divider to wipe between them — the quickest way to
+confirm the final output matches your intent.
+
+### Pixel-peeping zoom
+
+In any view, click the image to zoom toward the clicked point and click again to fit; while zoomed,
+drag to pan. The zoom factor (100 % / 200 % / 400 %, where 100 % is exact 1:1 pixels) is set in
+Preferences.
+
 ## Saving & Reusing Tone-Mapping Settings
 
 The tone-mapping ("develop") settings you craft for each image live only in memory during a
@@ -208,6 +255,8 @@ The application uses a **split-axis histogram** approach:
 This provides optimal resolution for both SDR and HDR ranges within a compact visualization.
 
 Bin edges are computed to ensure the last SDR bin width approximately matches the first HDR bin width, creating a visually continuous transition at the reference white boundary.
+
+The histograms use a Lightroom-style presentation: an opaque measured-color palette, a robust Y-axis scale that ignores spikes, and render-time smoothing for clean curves. Clipping statistics (the count of clipped pixels by maxRGB) are always displayed, regardless of the active preview view.
 
 ### Clipping Visualization
 
