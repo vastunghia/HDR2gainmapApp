@@ -12,7 +12,7 @@
   <a href="https://github.com/vastunghia/HDR2gainmapApp/releases/latest"><img src="https://img.shields.io/github/v/release/vastunghia/HDR2gainmapApp?label=latest%20release&sort=semver" alt="Latest release"></a>
   <a href="https://github.com/vastunghia/HDR2gainmapApp/releases"><img src="https://img.shields.io/github/downloads/vastunghia/HDR2gainmapApp/total?label=downloads" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/platform-macOS%2015%2B-blue" alt="Platform macOS 15+">
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/vastunghia/HDR2gainmapApp" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 </p>
 
 <p align="center">
