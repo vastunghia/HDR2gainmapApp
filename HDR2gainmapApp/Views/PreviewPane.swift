@@ -108,7 +108,7 @@ struct PreviewPane: View {
                         }
                         .transition(.opacity)
                     } else if let error = viewModel.previewError {
-                        // The selected image is not a valid HDR PNG.
+                        // The selected image is not a valid HDR image.
                         VStack(spacing: 20) {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .font(.system(size: 60))
@@ -125,7 +125,7 @@ struct PreviewPane: View {
                                     .multilineTextAlignment(.center)
                                     .padding(.horizontal, 40)
                                 
-                                Text("This image cannot be processed or exported. Please ensure it's a valid HDR PNG with Display P3 PQ color space.")
+                                Text("This image cannot be processed or exported. Please ensure it's a valid HDR PNG/TIFF with a PQ or HLG transfer function (e.g. Display P3 PQ or BT.2020 PQ).")
                                     .font(.caption)
                                     .foregroundStyle(.tertiary)
                                     .multilineTextAlignment(.center)

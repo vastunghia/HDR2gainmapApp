@@ -107,10 +107,14 @@ class HDRImage: Identifiable {
             }
         }
         
-        // Transfer function (detect PQ)
+        // Transfer function (detect PQ/HLG). The color-space name is unreliable for
+        // custom ICC profiles (e.g. DaVinci Resolve PQ exports named "Display P3"), so
+        // fall back to querying the transfer function directly.
         var transferFunction = "Unknown"
         if colorSpaceName.contains("PQ") || colorSpaceName.contains("ST2084") || colorSpaceName.contains("2084") {
             transferFunction = "PQ (HDR)"
+        } else if isHDRTransfer(cgImage.colorSpace) {
+            transferFunction = "PQ/HLG (HDR)"
         } else if colorSpaceName.contains("sRGB") || colorSpaceName.contains("RGB") {
             transferFunction = "sRGB"
         }

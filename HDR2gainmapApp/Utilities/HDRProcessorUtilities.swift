@@ -12,6 +12,15 @@ nonisolated func cs_name(_ cs: CGColorSpace?) -> String {
     return "unknown"
 }
 
+/// True if the color space declares an ITU-R BT.2100 transfer (PQ or HLG),
+/// regardless of the ICC profile name. This recognizes genuine HDR inputs whose
+/// embedded ICC profile is a custom, unnamed one (e.g. DaVinci Resolve's PNG/TIFF
+/// exports, which carry a PQ `cicp`/TRC but are merely labeled "Display P3").
+nonisolated func isHDRTransfer(_ cs: CGColorSpace?) -> Bool {
+    guard let cs = cs else { return false }
+    return CGColorSpaceUsesITUR_2100TF(cs)
+}
+
 // MARK: - Tone Mapping Utilities
 
 /// General overload with explicit headroom controls.

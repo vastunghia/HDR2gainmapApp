@@ -29,14 +29,14 @@ there. Export HDR from your editor and you typically end up with one of two bad 
 file that throws away your highlights, or an HDR file whose gain map gets **stripped the moment it
 syncs through iCloud** or opened by non-Apple software.
 
-**HDR2gainmap App** closes that gap. It takes a pure HDR PNG (Display P3 PQ, 16-bit) and writes a
+**HDR2gainmap App** closes that gap. It takes a pure HDR file — a 16-bit PNG or TIFF with a PQ/HLG transfer — and writes a
 **HEIC with an embedded, standards-based gain map** — the same ISO 21496-1 format Apple itself writes
 for native HDR captures. Crucially, it gives you **full creative control over how the HDR is
 tone-mapped to the SDR base**, so the photo looks exactly how you want it on *both* HDR and SDR
 displays — and survives iCloud sync intact.
 
 This is the tail end of a real photographer's workflow: **shoot RAW → edit in HDR (e.g. Lightroom) →
-export HDR PNG → HDR2gainmap App → a gain-map HEIC you can drop straight into your iCloud library.**
+export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop straight into your iCloud library.**
 
 ## Who is it for
 
@@ -155,21 +155,27 @@ Where does the output work?
 
 ## Input Format Requirements
 
-The application accepts **HDR PNG files** with the following specifications:
+The application accepts **HDR PNG and TIFF files** with the following specifications:
 
-- **Color Space tag**: Display P3 with PQ (Perceptual Quantizer / ST.2084) transfer function
-- **Bit Depth**: 16-bit per channel (required for PQ encoding)
+- **Transfer function**: PQ (Perceptual Quantizer / ST.2084) or HLG — i.e. any ITU-R BT.2100 HDR transfer
+- **Color Space**: wide-gamut (e.g. Display P3 or BT.2020); other primaries are converted automatically
+- **Bit Depth**: 16-bit per channel (required for HDR encoding)
 - **Channels**: RGB or RGBA
-- **File Extension**: `.png`
+- **File Extensions**: `.png`, `.tif`, `.tiff`
 
-### Verifying Your HDR PNGs
+The HDR transfer function is detected directly from the file's color space, so HDR images
+exported by editors that embed a custom (unnamed) ICC profile are recognized too.
 
-You can verify your HDR PNG files using macOS command-line tools:
+### Verifying Your HDR Files
+
+You can inspect a file's color space with macOS command-line tools:
 ```bash
 sips -g all your_image.png | grep -E "space|profile"
 ```
 
-Expected output should contain `Display P3 PQ` or similar PQ-based color space identifier.
+A PQ-tagged file reports a `PQ` / `ST 2084` color space. Note that some editors export genuine
+HDR with a generically named profile (e.g. just `Display P3`) — these are still accepted, as the
+app reads the embedded transfer function rather than relying on the profile name.
 
 ## How It Works
 
@@ -327,7 +333,25 @@ To verify that your exported HEIC files contain valid gain maps and render corre
 
 ## Building from Source
 
-Most users should just **[download the latest release](https://github.com/vastunghia/HDR2gainmapApp/releases/latest)** — the app is signed and notarized. Build from source only if you want to modify it.
+Most users should just **[download the latest release](https://github.com/vastunghia/HDR2gainmapApp/releases/latest)**. Build from source only if you want to modify it.
+
+### Opening the downloaded app
+
+The release build is code-signed but **not notarized**, so on first launch macOS Gatekeeper
+will block it with a *"cannot be opened because the developer cannot be verified"* (or
+*"damaged"*) warning. To open it anyway, do **one** of the following:
+
+- **System Settings → Privacy & Security**: double-click the app once (it gets blocked), then
+  open **System Settings → Privacy & Security**, scroll to the *Security* section, and click
+  **Open Anyway** next to the message about `HDR2gainmapApp`. Confirm and authenticate.
+  *(On macOS 15 Sequoia and later this is the required route — Apple removed the old
+  Control-click → Open shortcut for non-notarized apps.)*
+- **Or remove the quarantine flag** from Terminal (works on every macOS version):
+  ```bash
+  xattr -dr com.apple.quarantine /path/to/HDR2gainmapApp.app
+  ```
+
+If you'd rather avoid this entirely, [build from source](#clone-and-build) and run from Xcode.
 
 ### Prerequisites
 

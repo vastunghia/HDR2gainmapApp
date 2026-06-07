@@ -138,7 +138,6 @@ class HDRProcessor {
     // and these color spaces are never mutated, so they are safe to use off the main actor.
     nonisolated private let linear_p3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
     nonisolated private let p3_cs = CGColorSpace(name: CGColorSpace.displayP3)!
-    nonisolated private let hdr_required = CGColorSpace.displayP3_PQ as String
 
     // Metal-backed histogram calculator (falls back to CPU when unavailable).
     // Internally serialized with an NSLock, so it is safe to call from background tasks.
@@ -1718,10 +1717,11 @@ class HDRProcessor {
         // Create a CIImage from the CGImage with HDR expansion.
         let fileCI = CIImage(cgImage: rawData.cgImage, options: [CIImageOption.expandToHDR: true])
         
-        // Validate the color space.
-        let name = cs_name(fileCI.colorSpace)
-        guard name == hdr_required else {
-            throw ProcessingError.invalidColorSpace(name)
+        // Validate the color space: accept any PQ/HLG (ITU-R BT.2100) transfer,
+        // not only the canonically-named Display P3 PQ. Primaries are normalized
+        // by the linearization to extendedLinearDisplayP3 below.
+        guard isHDRTransfer(fileCI.colorSpace) else {
+            throw ProcessingError.invalidColorSpace(cs_name(fileCI.colorSpace))
         }
         
         // Materialize in linear P3

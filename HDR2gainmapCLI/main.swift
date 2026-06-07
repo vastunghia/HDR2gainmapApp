@@ -59,10 +59,10 @@ struct CLIArguments {
     
     static func printUsage() {
         print("""
-        Usage: HDR2gainmapCLI [OPTIONS] <input.png> <output.heic>
-        
+        Usage: HDR2gainmapCLI [OPTIONS] <input.png|tif> <output.heic>
+
         Arguments:
-          <input.png>      Path to input HDR PNG (Display P3 PQ, 16-bit)
+          <input>          Path to input HDR PNG or TIFF (PQ/HLG, 16-bit)
           <output.heic>    Path to output HEIC with gain map
         
         Options:
@@ -149,8 +149,8 @@ func main() async {
         exit(1)
     }
     
-    guard inputURL.pathExtension.lowercased() == "png" else {
-        print("❌ Input must be a PNG file")
+    guard ["png", "tif", "tiff"].contains(inputURL.pathExtension.lowercased()) else {
+        print("❌ Input must be a PNG or TIFF file")
         exit(1)
     }
     

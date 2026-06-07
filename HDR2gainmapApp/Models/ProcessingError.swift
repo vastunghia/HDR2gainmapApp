@@ -15,7 +15,7 @@ enum ProcessingError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .cannotReadHDR: return "Cannot read HDR image"
-        case .invalidColorSpace(let cs): return "Invalid colorspace: \(cs ?? "nil")"
+        case .invalidColorSpace(let cs): return "Not an HDR image (no PQ/HLG transfer): \(cs ?? "nil")"
         case .tonemapFailed: return "Tonemapping failed"
         case .headroomCalculationFailed: return "Headroom calculation failed"
         case .gainMapGenerationFailed: return "Gain map generation failed"

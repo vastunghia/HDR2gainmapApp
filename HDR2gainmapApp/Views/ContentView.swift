@@ -64,7 +64,7 @@ struct FolderSelectionView: View {
                 .fontWeight(.bold)
 
             VStack(spacing: 12) {
-                Text("Select a folder containing HDR PNG images to get started")
+                Text("Select a folder containing HDR PNG/TIFF images to get started")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -81,7 +81,7 @@ struct FolderSelectionView: View {
             }
 
             VStack(spacing: 12) {
-                Text("…or import previously saved settings for a folder of HDR PNG images")
+                Text("…or import previously saved settings for a folder of HDR PNG/TIFF images")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

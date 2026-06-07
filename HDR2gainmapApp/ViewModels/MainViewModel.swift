@@ -194,7 +194,7 @@ class MainViewModel {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        panel.message = "Select folder containing HDR PNG images"
+        panel.message = "Select folder containing HDR PNG/TIFF images"
         
         panel.begin { [weak self] response in
             guard let self = self else { return }
@@ -221,11 +221,12 @@ class MainViewModel {
                 options: [.skipsHiddenFiles]
             )
 
-            let pngFiles = contents.filter { $0.pathExtension.lowercased() == "png" }
+            let inputExtensions: Set<String> = ["png", "tif", "tiff"]
+            let pngFiles = contents.filter { inputExtensions.contains($0.pathExtension.lowercased()) }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
 
             guard !pngFiles.isEmpty else {
-                self.errorMessage = "No PNG files found in selected folder"
+                self.errorMessage = "No PNG/TIFF files found in selected folder"
                 self.showError = true
                 return []
             }
