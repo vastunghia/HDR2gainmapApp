@@ -237,11 +237,13 @@ The result is embedded as a standards-based **ISO 21496-1 gain map** — the sam
 
 ### 3. Final Export
 
-Once the gain map has been generated, the app writes the final HEIC by combining the SDR base, the gain map, and the preserved source metadata. The export proceeds in two steps:
+Once the gain map has been generated, the app writes the final HEIC by combining the SDR base, the gain map, and the preserved source metadata. The export is built around a **single write to disk**:
 
-1. **First write.** The HEIC is written via `CIContext.writeHEIF10Representation()` on macOS 26 or later, or via the 10-bit `CIContext.writeHEIFRepresentation()` on earlier systems (selected automatically). At this point the gain map is embedded under the legacy Apple auxiliary slot that Core Image emits by default.
+1. **In-memory encode.** The SDR base and the original HDR are encoded to an in-memory HEIC buffer via `CIContext.heif10Representation()` on macOS 26 or later, or via the 10-bit `CIContext.heifRepresentation()` on earlier systems (selected automatically). Core Image computes and embeds the gain map here; nothing touches the disk yet.
 
-2. **Re-encode via ImageIO.** The file is then reopened: the gain map is optionally subsampled to the requested resolution (½× by default — see Preferences below) and re-embedded under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot, with matching ISO 21496-1 binary metadata. The primary image is preserved unchanged.
+2. **Re-encode to disk via ImageIO.** That in-memory buffer is then re-encoded: the gain map is optionally subsampled to the requested resolution (½× by default — see Preferences below) and embedded under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot, with matching ISO 21496-1 binary metadata. The primary image is preserved unchanged. This is the only write to disk.
+
+> **Note:** earlier versions wrote the HEIC to disk first and then reopened it to re-encode — an extra full-size write that has since been collapsed into the in-memory step above.
 
 Two export settings are configurable in the Preferences window:
 
