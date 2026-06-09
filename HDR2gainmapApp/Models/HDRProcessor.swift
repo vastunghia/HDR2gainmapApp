@@ -487,37 +487,6 @@ class HDRProcessor {
         let originalMetadata = extractMetadata(from: image.url)
         // print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
         
-        // Generate the gain map.
-        //
-        // Luma (monochrome) path: round-trip the SDR base + HDR through a temp HEIF and
-        // read the auxiliary Apple HDR gain map back out, to embed it explicitly below.
-        //
-        // RGB path: the .auxiliaryHDRGainMap readback returns nil for an RGB gain map
-        // (Core Image stores it under a different auxiliary type), so we cannot
-        // pre-extract it the way the luma path does. Instead we let Core Image compute
-        // and embed the gain map directly during the final write, by passing .hdrImage
-        // in the export options below.
-        var gain_map: CIImage? = nil
-        if !image.settings.gainMapAsRGB {
-            let tmp_options: [CIImageRepresentationOption: Any] = [
-                kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
-                CIImageRepresentationOption.hdrImage: hdr,
-                CIImageRepresentationOption.hdrGainMapAsRGB: false
-            ]
-
-            guard let tmp_data = encode_ctx.heifRepresentation(of: sdrBase,
-                                                               format: .RGB10,
-                                                               colorSpace: p3_cs,
-                                                               options: tmp_options) else {
-                throw ProcessingError.gainMapGenerationFailed
-            }
-
-            guard let extracted = CIImage(data: tmp_data, options: [.auxiliaryHDRGainMap: true]) else {
-                throw ProcessingError.gainMapExtractionFailed
-            }
-            gain_map = extracted
-        }
-        
         var props = originalMetadata
 
         // ISO 21496-1 output requires Core Image to emit the modern HDRToneMap scheme, which it
@@ -552,59 +521,66 @@ class HDRProcessor {
         let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
         let quality = (heicQuality > 0) ? heicQuality : 0.95  // Fallback to 0.95 if not set
         
-        // Final export
-        var export_options: [CIImageRepresentationOption: Any] = [
+        // Encode the SDR base + gain map into an in-memory HEIC. Core Image always computes the
+        // gain map from the HDR source here (monochrome or RGB per `hdrGainMapAsRGB`); we no longer
+        // pre-extract it. This buffer is the intermediate that `convertToISOGainMap` re-encodes into
+        // the ISO 21496-1 layout — keeping it in RAM saves a full disk write (the old on-disk file
+        // was written only to be re-read immediately).
+        let export_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
-            CIImageRepresentationOption.hdrGainMapAsRGB: image.settings.gainMapAsRGB
+            CIImageRepresentationOption.hdrGainMapAsRGB: image.settings.gainMapAsRGB,
+            CIImageRepresentationOption.hdrImage: hdr
         ]
-        if let gain_map {
-            // Luma: embed the pre-extracted monochrome gain map.
-            export_options[CIImageRepresentationOption.hdrGainMapImage] = gain_map
-        } else {
-            // RGB: let Core Image compute and embed the gain map from the HDR source.
-            export_options[CIImageRepresentationOption.hdrImage] = hdr
-        }
-        
+
+        let heifData: Data
         if #available(macOS 26.0, *) {
-            try encode_ctx.writeHEIF10Representation(of: sdr_with_props,
-                                                     to: outputURL,
-                                                     colorSpace: p3_cs,
-                                                     options: export_options)
+            heifData = try encode_ctx.heif10Representation(of: sdr_with_props,
+                                                           colorSpace: p3_cs,
+                                                           options: export_options)
         } else {
-            try encode_ctx.writeHEIFRepresentation(of: sdr_with_props,
-                                                   to: outputURL,
-                                                   format: .RGB10,
-                                                   colorSpace: p3_cs,
-                                                   options: export_options)
+            guard let d = encode_ctx.heifRepresentation(of: sdr_with_props,
+                                                        format: .RGB10,
+                                                        colorSpace: p3_cs,
+                                                        options: export_options) else {
+                throw ProcessingError.gainMapGenerationFailed
+            }
+            heifData = d
         }
-        
+
         // Re-encode so the gain map lands in the ISO 21496-1 auxiliary slot
         // (kCGImageAuxiliaryDataTypeISOGainMap). ImageIO translates the HDRToneMap metadata
         // into the standard ISO binary metadata box, recognized by Adobe's Gain Map Demo App
-        // while still rendering correctly on iOS 26 / macOS 15+.
-        try convertToISOGainMap(at: outputURL)
+        // while still rendering correctly on iOS 26 / macOS 15+. This is the only write to disk.
+        try convertToISOGainMap(from: heifData, to: outputURL)
 
     }
 
     // MARK: - ISO 21496-1 Gain Map Conversion
 
-    /// Re-encode the just-written HEIC so its gain map is stored as a standard ISO 21496-1
+    /// Re-encode the in-memory HEIC so its gain map is stored as a standard ISO 21496-1
     /// gain map (`kCGImageAuxiliaryDataTypeISOGainMap`) instead of the Apple-proprietary
-    /// `kCGImageAuxiliaryDataTypeHDRGainMap` slot.
+    /// `kCGImageAuxiliaryDataTypeHDRGainMap` slot, writing the result to `url`.
     ///
     /// Available on macOS 15+ via `CGImageDestination` with `kCGImageDestinationEncodeToISOGainmap`.
     /// We read back the gain map Core Image wrote (Apple HDRGainMap aux + HDRToneMap metadata),
     /// add it under the ISO aux type, and let ImageIO emit the spec-correct ISO 21496-1 binary
     /// metadata. The HDR reconstruction is preserved (verified: identical peak luminance).
-    private func convertToISOGainMap(at url: URL) throws {
-        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            throw ProcessingError.isoConversionFailed("[A] CGImageSourceCreateWithURL nil for \(url.lastPathComponent)")
+    ///
+    /// `sourceData` is the HEIC Core Image just encoded in RAM, so this is the single disk write.
+    private func convertToISOGainMap(from sourceData: Data, to url: URL) throws {
+        guard let src = CGImageSourceCreateWithData(sourceData as CFData, nil) else {
+            throw ProcessingError.isoConversionFailed("[A] CGImageSourceCreateWithData nil for \(url.lastPathComponent)")
         }
 
-        // The gain map Core Image just wrote, under the Apple HDRGainMap aux type.
-        guard let rawAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(
-                    src, 0, kCGImageAuxiliaryDataTypeHDRGainMap),
-              var auxDict = rawAux as? [String: Any] else {
+        // The gain map Core Image just wrote. Where it lands depends on how it was produced:
+        // letting Core Image compute it via `.hdrImage` (as we now do) puts it under the ISO gain
+        // map aux type, whereas an explicit `.hdrGainMapImage` embed used the Apple HDRGainMap slot.
+        // Verified on macOS 15 (`heifRepresentation(format:.RGB10)`); the macOS 26
+        // `heif10Representation` branch is only exercisable via CI, so accept EITHER slot — we
+        // re-emit it as ISO below (subsampled) regardless.
+        let rawAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, kCGImageAuxiliaryDataTypeHDRGainMap)
+                  ?? CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, kCGImageAuxiliaryDataTypeISOGainMap)
+        guard var auxDict = rawAux as? [String: Any] else {
             // Enumerate other aux types so we can tell whether the gain map landed elsewhere.
             let probes: [(String, CFString)] = [
                 ("ISO",     kCGImageAuxiliaryDataTypeISOGainMap),
@@ -615,7 +591,7 @@ class HDRProcessor {
                 .filter { CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, $0.1) != nil }
                 .map { $0.0 }
             let presentStr = present.isEmpty ? "none" : present.joined(separator: ",")
-            throw ProcessingError.isoConversionFailed("[B] no HDRGainMap aux readable from just-written file \(url.lastPathComponent) (other aux present: \(presentStr))")
+            throw ProcessingError.isoConversionFailed("[B] no HDRGainMap aux readable from in-memory HEIC for \(url.lastPathComponent) (other aux present: \(presentStr))")
         }
 
         // Optionally subsample the gain map (Apple's native captures store it at half
