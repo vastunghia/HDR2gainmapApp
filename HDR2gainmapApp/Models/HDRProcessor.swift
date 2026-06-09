@@ -71,8 +71,6 @@ class HDRProcessor {
         let showClippedOverlay: Bool
         // Which view to render. The CLI never sets this (defaults to `.sdrTonemapped`).
         let mode: PreviewMode
-        // Affects the `.finalOutput` view only (the gain-map encoding the export would use).
-        let gainMapAsRGB: Bool
     }
 
     /// Snapshots the live per-image settings on the main actor.
@@ -85,8 +83,7 @@ class HDRProcessor {
             directSourceHeadroom: settings.directSourceHeadroom,
             targetHeadroom: settings.targetHeadroom,
             showClippedOverlay: settings.showClippedOverlay,
-            mode: mode,
-            gainMapAsRGB: settings.gainMapAsRGB
+            mode: mode
         )
     }
 
@@ -106,10 +103,7 @@ class HDRProcessor {
     }
 
     nonisolated private func previewKey(_ p: PreviewParams) -> NSString {
-        var k = p.url.absoluteString + "|mode=" + p.mode.rawValue + "|" + previewSettingsFingerprint(p)
-        // Only the final-output view depends on the gain-map encoding; keep it out of the other
-        // keys so toggling RGB doesn't needlessly invalidate the SDR/HDR-input caches.
-        if p.mode == .finalOutput { k += ";gm=\(p.gainMapAsRGB)" }
+        let k = p.url.absoluteString + "|mode=" + p.mode.rawValue + "|" + previewSettingsFingerprint(p)
         return NSString(string: k)
     }
 
@@ -294,7 +288,7 @@ class HDRProcessor {
         case .finalOutput:
             try Task.checkCancellation()
             let tEnc = Prof.tic()
-            let reconstructed = try reconstructHDRFromGainMap(sdrBase: sdrBase, hdr: hdr, gainMapAsRGB: params.gainMapAsRGB)
+            let reconstructed = try reconstructHDRFromGainMap(sdrBase: sdrBase, hdr: hdr)
             Prof.toc("renderCore.finalOutputEncode [\(file)]", tEnc)
             previewBaseCache.setObject(reconstructed, forKey: baseKey)
             let tRender = Prof.tic()
@@ -394,8 +388,7 @@ class HDRProcessor {
             directSourceHeadroom: params.directSourceHeadroom,
             targetHeadroom: params.targetHeadroom,
             showClippedOverlay: params.showClippedOverlay,
-            mode: .sdrTonemapped,
-            gainMapAsRGB: params.gainMapAsRGB
+            mode: .sdrTonemapped
         )
         let key = previewKey(sdrParams)
 
@@ -521,14 +514,14 @@ class HDRProcessor {
         let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
         let quality = (heicQuality > 0) ? heicQuality : 0.95  // Fallback to 0.95 if not set
         
-        // Encode the SDR base + gain map into an in-memory HEIC. Core Image always computes the
-        // gain map from the HDR source here (monochrome or RGB per `hdrGainMapAsRGB`); we no longer
-        // pre-extract it. This buffer is the intermediate that `convertToISOGainMap` re-encodes into
-        // the ISO 21496-1 layout — keeping it in RAM saves a full disk write (the old on-disk file
-        // was written only to be re-read immediately).
+        // Encode the SDR base + gain map into an in-memory HEIC. Core Image computes the (luma,
+        // monochrome) gain map from the HDR source here; we no longer pre-extract it. This buffer
+        // is the intermediate that `convertToISOGainMap` re-encodes into the ISO 21496-1 layout —
+        // keeping it in RAM saves a full disk write (the old on-disk file was written only to be
+        // re-read immediately).
         let export_options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
-            CIImageRepresentationOption.hdrGainMapAsRGB: image.settings.gainMapAsRGB,
+            CIImageRepresentationOption.hdrGainMapAsRGB: false,
             CIImageRepresentationOption.hdrImage: hdr
         ]
 
@@ -1435,11 +1428,11 @@ class HDRProcessor {
     /// Reconstructs the HDR image the export would produce (SDR base + gain map) entirely in
     /// memory: encode to an in-memory HEIF (skipping the on-disk write + ISO conversion), then
     /// decode back with `.expandToHDR`. Used by the `.finalOutput` preview to validate fidelity.
-    nonisolated private func reconstructHDRFromGainMap(sdrBase: CIImage, hdr: CIImage, gainMapAsRGB: Bool) throws -> CIImage {
+    nonisolated private func reconstructHDRFromGainMap(sdrBase: CIImage, hdr: CIImage) throws -> CIImage {
         let options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
             CIImageRepresentationOption.hdrImage: hdr,
-            CIImageRepresentationOption.hdrGainMapAsRGB: gainMapAsRGB
+            CIImageRepresentationOption.hdrGainMapAsRGB: false
         ]
         guard let data = encode_ctx.heifRepresentation(of: sdrBase,
                                                        format: .RGB10,

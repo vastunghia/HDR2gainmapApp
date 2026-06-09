@@ -9,7 +9,6 @@ struct CLIArguments {
     let outputPath: String
     let verbose: Bool
     let verify: Bool
-    let rgbGainMap: Bool
     let gainMapSubsample: Int?
 
     static func parse() -> CLIArguments? {
@@ -18,7 +17,6 @@ struct CLIArguments {
         // Flags
         var verbose = false
         var verify = false
-        var rgbGainMap = false
         var gainMapSubsample: Int? = nil
         var positionalArgs: [String] = []
 
@@ -27,8 +25,6 @@ struct CLIArguments {
                 verbose = true
             } else if arg == "--verify" {
                 verify = true
-            } else if arg == "--rgb-gainmap" {
-                rgbGainMap = true
             } else if arg.hasPrefix("--gainmap-subsample=") {
                 guard let v = Int(arg.dropFirst("--gainmap-subsample=".count)), v >= 1 else {
                     print("❌ Invalid value for --gainmap-subsample: \(arg) (must be an integer ≥ 1)")
@@ -52,7 +48,6 @@ struct CLIArguments {
             outputPath: positionalArgs[1],
             verbose: verbose,
             verify: verify,
-            rgbGainMap: rgbGainMap,
             gainMapSubsample: gainMapSubsample
         )
     }
@@ -68,7 +63,6 @@ struct CLIArguments {
         Options:
           -v, --verbose    Print detailed processing information
           --verify         Verify output file after export
-          --rgb-gainmap        Encode an RGB (3-channel) gain map instead of luma-only
           --gainmap-subsample=N  Gain map resolution divisor: 1 = full, 2 = half (default)
 
         Example:
@@ -163,7 +157,6 @@ func main() async {
     
     // Create HDRImage and processor
     let image = HDRImage(url: inputURL, loadThumbnailImmediately: false)
-    image.settings.gainMapAsRGB = args.rgbGainMap
     // The engine reads the gain map subsample factor from UserDefaults (shared with the GUI
     // preference). Default is 2 (half) when unset.
     if let gs = args.gainMapSubsample {
@@ -172,7 +165,7 @@ func main() async {
     let processor = HDRProcessor.shared
 
     if args.verbose {
-        print("   Gain map: \(args.rgbGainMap ? "RGB (3-channel)" : "luma (monochrome)")")
+        print("   Gain map: luma (monochrome)")
         let subsample = args.gainMapSubsample ?? 2
         print("   Gain map resolution: \(subsample <= 1 ? "full (1×)" : "1/\(subsample)×")")
     }

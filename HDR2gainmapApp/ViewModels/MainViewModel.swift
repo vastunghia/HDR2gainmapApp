@@ -931,37 +931,32 @@ class MainViewModel {
             // so that SwiftUI can render the overlay before
             // starting the hard work
             try? await Task.sleep(for: .milliseconds(32))
-            
-            var isValid = true
+
+            // Generate filename with suffix
+            let baseName = image.fileName
+            let suffix = image.settings.filenameSuffix
+            let filename = FilenameHelper.generateFilename(
+                baseName: baseName,
+                suffix: suffix,
+                extension: "heic"
+            )
+
+            let outputURL = outputFolder.appendingPathComponent(filename)
+
+            // EXPORT. `exportImage` performs the same load + tone-map the old validation pass did,
+            // so we attempt it directly instead of pre-rendering a (discarded) preview. An input
+            // that isn't a valid HDR image throws before any file is written → reported as skipped;
+            // anything else that goes wrong during encoding is a genuine failure.
+            try? FileManager.default.removeItem(at: outputURL)
             do {
-                _ = try await processor.generatePreview(for: image)
-            } catch {
-                isValid = false
+                try await processor.exportImage(image, to: outputURL)
+                succeeded.append(filename)  // ✅ Use final name
+            } catch ProcessingError.cannotReadHDR, ProcessingError.invalidColorSpace(_) {
                 skipped.append(image.fileName)
+            } catch {
+                failed.append((filename, error.localizedDescription))
             }
-            
-            // EXPORT
-            if isValid {
-                // Generate filename with suffix
-                let baseName = image.fileName
-                let suffix = image.settings.filenameSuffix
-                let filename = FilenameHelper.generateFilename(
-                    baseName: baseName,
-                    suffix: suffix,
-                    extension: "heic"
-                )
-                
-                let outputURL = outputFolder.appendingPathComponent(filename)
-                
-                try? FileManager.default.removeItem(at: outputURL)
-                do {
-                    try await processor.exportImage(image, to: outputURL)
-                    succeeded.append(filename)  // ✅ Use final name
-                } catch {
-                    failed.append((filename, error.localizedDescription))
-                }
-            }
-            
+
             // progress
             exportProgress = Double(index + 1) / Double(totalCount)
         }
