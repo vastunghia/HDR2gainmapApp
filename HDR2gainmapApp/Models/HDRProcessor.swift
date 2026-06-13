@@ -973,8 +973,180 @@ class HDRProcessor {
         return max(1.0, headroom)
     }
     
+    // MARK: - Auto source headroom
+
+    /// Result of the automatic source-headroom search.
+    nonisolated struct AutoHeadroomResult: Sendable {
+        let sourceHeadroom: Float    // chosen value in [1.0, measuredHeadroom]
+        let measuredHeadroom: Float
+        let clipFraction: Double     // worst per-channel clip fraction at the chosen value
+        let iterations: Int          // number of tonemap+count evaluations performed
+        let metTolerance: Bool       // false if even the measured headroom exceeds the tolerance
+    }
+
+    /// Outcome of writing an auto-found source headroom into a settings object.
+    nonisolated struct AutoApplyOutcome: Sendable {
+        let requestedHeadroom: Float
+        let realizedHeadroom: Float  // headroom the written parameter actually reproduces
+        let note: String?            // set when the realized value had to deviate (clamps, no-headroom images)
+    }
+
+    /// Default tolerance for the Auto search, as percent of total pixels (per channel).
+    nonisolated static let defaultAutoClipTolerancePercent: Double = 1.0
+
+    /// Tolerance as a fraction (0...1), read from preferences with fallback to the default.
+    nonisolated static func autoClipToleranceFraction() -> Double {
+        let pct = UserDefaults.standard.double(forKey: "autoClipTolerancePercent")
+        return (pct > 0 ? pct : defaultAutoClipTolerancePercent) / 100.0
+    }
+
+    /// Worst per-channel clip fraction (0...1) of the SDR rendering: `max(frac_R, frac_G, frac_B)`,
+    /// where `frac_c` is the fraction of pixels whose channel c exceeds 1+eps (counted independently
+    /// of the other channels). Limiting this curbs single-channel clipping (e.g. a clipped R channel
+    /// shifts the reconstructed tint toward yellow).
+    nonisolated private func maxPerChannelClipFraction(sdr: CIImage, context: CIContext) -> Double {
+        let eps: CGFloat = 1e-6
+        let thr: CGFloat = 1.0 + eps
+
+        let rMask = thresh01(extractChannel(sdr, r: 1, g: 0, b: 0), threshold: thr)
+        let gMask = thresh01(extractChannel(sdr, r: 0, g: 1, b: 0), threshold: thr)
+        let bMask = thresh01(extractChannel(sdr, r: 0, g: 0, b: 1), threshold: thr)
+
+        func fraction(_ mask: CIImage) -> Double {
+            let (clipped, total) = clippedCountViaAreaAverage(binaryMaskR: mask, context: context)
+            guard total > 0 else { return 0 }
+            return Double(clipped) / Double(total)
+        }
+
+        return max(fraction(rMask), max(fraction(gMask), fraction(bMask)))
+    }
+
+    /// Finds the smallest source headroom in [1.0, measured] whose tone-mapped SDR keeps the worst
+    /// per-channel clip fraction (`max(frac_R, frac_G, frac_B)`) within `tolerance`. Each `frac_c`
+    /// is monotonically non-increasing in the source headroom, so their max is too and a binary
+    /// search applies. Full-resolution evaluation: each iteration is one tonemap + three
+    /// CIAreaAverage readbacks.
+    @concurrent nonisolated func findAutoSourceHeadroom(
+        url: URL,
+        targetHeadroom: Float,
+        tolerance: Double
+    ) async throws -> AutoHeadroomResult {
+        let hdr = try loadHDR(url: url)
+        let measured = max(1.0, getHeadroomForImage(url: url))
+
+        func clipFraction(at sourceHeadroom: Float) throws -> Double {
+            guard let sdr = tonemap_sdr(from: hdr, sourceHeadroom: sourceHeadroom, targetHeadroom: targetHeadroom) else {
+                throw ProcessingError.tonemapFailed
+            }
+            return maxPerChannelClipFraction(sdr: sdr, context: ctx_linear_p3)
+        }
+
+        // No HDR content: nothing to search.
+        if measured <= 1.0 + 1e-4 {
+            return AutoHeadroomResult(sourceHeadroom: 1.0, measuredHeadroom: measured,
+                                      clipFraction: try clipFraction(at: 1.0),
+                                      iterations: 1, metTolerance: true)
+        }
+
+        let fLow = try clipFraction(at: 1.0)
+        if fLow <= tolerance {
+            return AutoHeadroomResult(sourceHeadroom: 1.0, measuredHeadroom: measured,
+                                      clipFraction: fLow, iterations: 1, metTolerance: true)
+        }
+
+        let fHigh = try clipFraction(at: measured)
+        if fHigh > tolerance {
+            // The measured headroom is a *luma* peak: on heavily saturated content a single channel
+            // can exceed it, so per-channel clipping may persist even here. Stay conservative.
+            return AutoHeadroomResult(sourceHeadroom: measured, measuredHeadroom: measured,
+                                      clipFraction: fHigh, iterations: 2, metTolerance: false)
+        }
+
+        // Invariant: f(hi) ≤ tolerance < f(lo).
+        var lo: Float = 1.0
+        var hi: Float = measured
+        var fHi = fHigh
+        var iterations = 2
+        while hi - lo > max(0.01, 0.005 * hi), iterations < 14 {
+            try Task.checkCancellation()
+            let mid = (lo + hi) / 2
+            let f = try clipFraction(at: mid)
+            iterations += 1
+            if f <= tolerance {
+                hi = mid
+                fHi = f
+            } else {
+                lo = mid
+            }
+        }
+        return AutoHeadroomResult(sourceHeadroom: hi, measuredHeadroom: measured,
+                                  clipFraction: fHi, iterations: iterations, metTolerance: true)
+    }
+
+    /// Writes `sourceHeadroom` into the parameter of the currently active source-headroom method.
+    /// Runs on the main actor because `settings` is live @Observable state.
+    func applyAutoSourceHeadroom(_ sourceHeadroom: Float, to settings: ProcessingSettings, url: URL) async -> AutoApplyOutcome {
+        let measured = max(1.0, getHeadroomForImage(url: url))
+
+        switch settings.sourceHeadroomMethod {
+        case .peakMax:
+            // Invert sH = 1 + M − M^ratio (see buildSDRBase). For sH ∈ [1, M] the log argument is ≥ 1.
+            if measured <= 1.0 + 1e-4 {
+                settings.tonemapRatio = 1.0
+                return AutoApplyOutcome(requestedHeadroom: sourceHeadroom, realizedHeadroom: 1.0,
+                                        note: "Image has no headroom; tone mapping is a no-op")
+            }
+            let arg = max(1.0, 1.0 + measured - sourceHeadroom)
+            let ratio = min(max(log(arg) / log(measured), 0.0), 1.0)
+            settings.tonemapRatio = ratio
+            let realized = max(1.0, 1.0 + measured - powf(measured, ratio))
+            return AutoApplyOutcome(requestedHeadroom: sourceHeadroom, realizedHeadroom: realized, note: nil)
+
+        case .direct:
+            let clamped = min(max(sourceHeadroom, 0.1), max(1.0, measured * 2.0))
+            settings.directSourceHeadroom = clamped
+            return AutoApplyOutcome(requestedHeadroom: sourceHeadroom, realizedHeadroom: clamped, note: nil)
+
+        case .percentile:
+            _ = await prewarmPercentileCDF(url: url)
+            guard let box = Self.percentileCDFCache.object(forKey: url as NSURL) else {
+                return AutoApplyOutcome(requestedHeadroom: sourceHeadroom, realizedHeadroom: sourceHeadroom,
+                                        note: "Percentile lookup unavailable; settings unchanged")
+            }
+            let (percentile, realized) = Self.percentileForHeadroom(box, sourceHeadroom: sourceHeadroom)
+            settings.percentile = percentile
+            // One CDF bin of slack is inherent quantization; flag only larger deviations (clamps).
+            let binHeadroom = box.maxNits / Float(box.bins) / Constants.referenceHDRwhiteNit
+            let note: String? = abs(realized - sourceHeadroom) > 2.0 * binHeadroom
+                ? String(format: "Nearest reachable percentile selected (headroom %.2f instead of %.2f)", realized, sourceHeadroom)
+                : nil
+            return AutoApplyOutcome(requestedHeadroom: sourceHeadroom, realizedHeadroom: realized, note: note)
+        }
+    }
+
+    /// Inverse of `headroomFromCDF`: the percentile whose realized headroom best matches
+    /// `sourceHeadroom`, erring toward less clipping (ceil to the next reachable bin) and
+    /// clamped to the UI slider range [0.95, 0.99999].
+    private nonisolated static func percentileForHeadroom(_ box: PercentileCDFBox, sourceHeadroom: Float) -> (percentile: Float, realizedHeadroom: Float) {
+        let targetNits = sourceHeadroom * Constants.referenceHDRwhiteNit
+        var bin = Int((targetNits / max(0.001, box.maxNits) * Float(box.bins)).rounded(.up))
+        bin = min(max(bin, 0), box.bins - 1)
+
+        // Advance to the first bin a percentile can actually select: headroomFromCDF picks the
+        // first bin whose cdf reaches the target count, so empty bins are unreachable.
+        while bin < box.bins - 1, box.cdf[bin] == (bin > 0 ? box.cdf[bin - 1] : 0) {
+            bin += 1
+        }
+
+        let total = max(1, box.totalCount)
+        var percentile = Float(box.cdf[bin]) / Float(total)
+        percentile = min(max(percentile, 0.95), 0.99999)
+        let realized = headroomFromCDF(box, percentile: percentile)
+        return (percentile, realized)
+    }
+
     // MARK: - Headroom
-    
+
     /// Computes raw headroom (no cache; prefer getHeadroomForImage() instead).
     /// Use Metal for a 10–100× speedup (when available).
     nonisolated func computeMeasuredHeadroomRaw(url: URL) throws -> Float {
@@ -1181,6 +1353,65 @@ class HDRProcessor {
         }
     }
     
+    // --- Mask helpers (shared by overlay pipeline and Auto headroom search) ---
+
+    nonisolated private func extractChannel(_ img: CIImage, r: CGFloat, g: CGFloat, b: CGFloat) -> CIImage {
+        // Always route the selected channel into the output R channel (mono stored in R).
+        let m = CIFilter.colorMatrix()
+        m.inputImage = img
+        if r == 1 {
+            m.rVector = CIVector(x: 1, y: 0, z: 0, w: 0) // map R → R
+        } else if g == 1 {
+            m.rVector = CIVector(x: 0, y: 1, z: 0, w: 0) // map G → R
+        } else {
+            m.rVector = CIVector(x: 0, y: 0, z: 1, w: 0) // map B → R
+        }
+        m.gVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        m.bVector = CIVector(x: 0, y: 0, z: 0, w: 0)
+        m.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        return m.outputImage!
+    }
+
+    nonisolated private func thresh01(_ monoR: CIImage, threshold: CGFloat = 1.0) -> CIImage {
+        // (R - thr)^+ → [0,1] binaria in R
+        let sub = CIFilter.colorMatrix()
+        sub.inputImage = monoR
+        sub.rVector   = CIVector(x: 1, y: 0, z: 0, w: 0)
+        sub.gVector   = CIVector(x: 0, y: 0, z: 0, w: 0)
+        sub.bVector   = CIVector(x: 0, y: 0, z: 0, w: 0)
+        sub.aVector   = CIVector(x: 0, y: 0, z: 0, w: 1)
+        sub.biasVector = CIVector(x: -threshold, y: 0, z: 0, w: 0)
+        var y = sub.outputImage!
+
+        let clampPos = CIFilter.colorClamp()
+        clampPos.inputImage   = y
+        clampPos.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clampPos.maxComponents = CIVector(x: 1e6, y: 0, z: 0, w: 1)
+        y = clampPos.outputImage!
+
+        let gain: CGFloat = 1_000_000
+        let amp = CIFilter.colorMatrix()
+        amp.inputImage = y
+        amp.rVector   = CIVector(x: gain, y: 0, z: 0, w: 0)
+        amp.gVector   = CIVector(x: 0,    y: 0, z: 0, w: 0)
+        amp.bVector   = CIVector(x: 0,    y: 0, z: 0, w: 0)
+        amp.aVector   = CIVector(x: 0,    y: 0, z: 0, w: 1)
+        y = amp.outputImage!
+
+        let clamp01 = CIFilter.colorClamp()
+        clamp01.inputImage   = y
+        clamp01.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clamp01.maxComponents = CIVector(x: 1, y: 0, z: 0, w: 1)
+        return clamp01.outputImage!
+    }
+
+    nonisolated private func andMask(_ a: CIImage, _ b: CIImage) -> CIImage {
+        let f = CIFilter.multiplyCompositing()
+        f.inputImage = a
+        f.backgroundImage = b
+        return f.outputImage!
+    }
+
     /// Multi-color overlay for clipped SDR pixels (maxRGB > 1):
     /// - red/green/blue: only R / G / B is clipped.
     /// - yellow/magenta/cyan: 2 channels clipped.
@@ -1199,56 +1430,7 @@ class HDRProcessor {
         let total = w * h
         
         // --- Helpers -----------------------------------------------------------
-        func extractChannel(_ img: CIImage, r: CGFloat, g: CGFloat, b: CGFloat) -> CIImage {
-            // Always route the selected channel into the output R channel (mono stored in R).
-            let m = CIFilter.colorMatrix()
-            m.inputImage = img
-            if r == 1 {
-                m.rVector = CIVector(x: 1, y: 0, z: 0, w: 0) // map R → R
-            } else if g == 1 {
-                m.rVector = CIVector(x: 0, y: 1, z: 0, w: 0) // map G → R
-            } else {
-                m.rVector = CIVector(x: 0, y: 0, z: 1, w: 0) // map B → R
-            }
-            m.gVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-            m.bVector = CIVector(x: 0, y: 0, z: 0, w: 0)
-            m.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
-            return m.outputImage!
-        }
-        
-        func thresh01(_ monoR: CIImage, threshold: CGFloat = 1.0) -> CIImage {
-            // (R - thr)^+ → [0,1] binaria in R
-            let sub = CIFilter.colorMatrix()
-            sub.inputImage = monoR
-            sub.rVector   = CIVector(x: 1, y: 0, z: 0, w: 0)
-            sub.gVector   = CIVector(x: 0, y: 0, z: 0, w: 0)
-            sub.bVector   = CIVector(x: 0, y: 0, z: 0, w: 0)
-            sub.aVector   = CIVector(x: 0, y: 0, z: 0, w: 1)
-            sub.biasVector = CIVector(x: -threshold, y: 0, z: 0, w: 0)
-            var y = sub.outputImage!
-            
-            let clampPos = CIFilter.colorClamp()
-            clampPos.inputImage   = y
-            clampPos.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
-            clampPos.maxComponents = CIVector(x: 1e6, y: 0, z: 0, w: 1)
-            y = clampPos.outputImage!
-            
-            let gain: CGFloat = 1_000_000
-            let amp = CIFilter.colorMatrix()
-            amp.inputImage = y
-            amp.rVector   = CIVector(x: gain, y: 0, z: 0, w: 0)
-            amp.gVector   = CIVector(x: 0,    y: 0, z: 0, w: 0)
-            amp.bVector   = CIVector(x: 0,    y: 0, z: 0, w: 0)
-            amp.aVector   = CIVector(x: 0,    y: 0, z: 0, w: 1)
-            y = amp.outputImage!
-            
-            let clamp01 = CIFilter.colorClamp()
-            clamp01.inputImage   = y
-            clamp01.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
-            clamp01.maxComponents = CIVector(x: 1, y: 0, z: 0, w: 1)
-            return clamp01.outputImage!
-        }
-        
+        // (extractChannel / thresh01 are instance methods, shared with the Auto search.)
         func invert01(_ monoR: CIImage) -> CIImage {
             let inv = CIFilter.colorMatrix()
             inv.inputImage = monoR
@@ -1260,24 +1442,10 @@ class HDRProcessor {
             return inv.outputImage!
         }
         
-        func andMask(_ a: CIImage, _ b: CIImage) -> CIImage {
-            let f = CIFilter.multiplyCompositing()
-            f.inputImage = a
-            f.backgroundImage = b
-            return f.outputImage!
-        }
-        
         func andNot(_ a: CIImage, _ b: CIImage) -> CIImage {
             andMask(a, invert01(b)) // a ∧ ¬b
         }
-        
-        func maxMask(_ a: CIImage, _ b: CIImage) -> CIImage {
-            let f = CIFilter.maximumCompositing()
-            f.inputImage = a
-            f.backgroundImage = b
-            return f.outputImage!
-        }
-        
+
         func toAlpha(_ monoR: CIImage) -> CIImage {
             let m = CIFilter.colorMatrix()
             m.inputImage = monoR

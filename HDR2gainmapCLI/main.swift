@@ -10,6 +10,8 @@ struct CLIArguments {
     let verbose: Bool
     let verify: Bool
     let gainMapSubsample: Int?
+    let auto: Bool
+    let autoTolerancePercent: Double?
 
     static func parse() -> CLIArguments? {
         let args = CommandLine.arguments
@@ -18,6 +20,8 @@ struct CLIArguments {
         var verbose = false
         var verify = false
         var gainMapSubsample: Int? = nil
+        var auto = false
+        var autoTolerancePercent: Double? = nil
         var positionalArgs: [String] = []
 
         for arg in args.dropFirst() {
@@ -31,6 +35,14 @@ struct CLIArguments {
                     return nil
                 }
                 gainMapSubsample = v
+            } else if arg == "--auto" {
+                auto = true
+            } else if arg.hasPrefix("--auto-tolerance=") {
+                guard let v = Double(arg.dropFirst("--auto-tolerance=".count)), v > 0, v <= 100 else {
+                    print("❌ Invalid value for --auto-tolerance: \(arg) (must be a percentage in (0, 100])")
+                    return nil
+                }
+                autoTolerancePercent = v
             } else if arg.hasPrefix("--") || arg.hasPrefix("-") {
                 print("❌ Unknown flag: \(arg)")
                 return nil
@@ -48,7 +60,9 @@ struct CLIArguments {
             outputPath: positionalArgs[1],
             verbose: verbose,
             verify: verify,
-            gainMapSubsample: gainMapSubsample
+            gainMapSubsample: gainMapSubsample,
+            auto: auto,
+            autoTolerancePercent: autoTolerancePercent
         )
     }
     
@@ -64,6 +78,9 @@ struct CLIArguments {
           -v, --verbose    Print detailed processing information
           --verify         Verify output file after export
           --gainmap-subsample=N  Gain map resolution divisor: 1 = full, 2 = half (default)
+          --auto           Auto-pick the source headroom: lowest value keeping the fraction of
+                           pixels clipped in any single SDR channel within the tolerance
+          --auto-tolerance=PCT   Per-channel clip tolerance for --auto, percent of pixels (default 1.0)
 
         Example:
           HDR2gainmapCLI input.png output.heic --verify
@@ -191,6 +208,30 @@ func main() async {
             print()
         }
         
+        // Auto tone-mapping: search the lowest source headroom within the clip tolerance and
+        // feed it to the export via the Direct method (exact pass-through of the found value).
+        if args.auto {
+            let tolerance = (args.autoTolerancePercent ?? HDRProcessor.defaultAutoClipTolerancePercent) / 100.0
+            let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+            let result = try await processor.findAutoSourceHeadroom(
+                url: inputURL,
+                targetHeadroom: targetHeadroom,
+                tolerance: tolerance
+            )
+            image.settings.sourceHeadroomMethod = .direct
+            image.settings.directSourceHeadroom = result.sourceHeadroom
+            if args.verbose {
+                print("🎯 Auto source headroom: \(String(format: "%.3f", result.sourceHeadroom)) " +
+                      "(measured \(String(format: "%.3f", result.measuredHeadroom)), " +
+                      "max per-channel clip \(String(format: "%.4f", result.clipFraction * 100))%, " +
+                      "\(result.iterations) evaluations)")
+                if !result.metTolerance {
+                    print("⚠️  Tolerance not reachable even at the measured headroom; using the measured value")
+                }
+                print()
+            }
+        }
+
         // Export
         if args.verbose {
             print("🔄 Exporting to HEIC with gain map...")

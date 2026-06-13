@@ -105,17 +105,72 @@ struct ControlPanel: View {
 
 struct TonemapControlsSection: View {
     @Binding var settings: ProcessingSettings
-    let viewModel: MainViewModel
+    @Bindable var viewModel: MainViewModel
     let onSettingsChange: () -> Void
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             // SOURCE HEADROOM SECTION
             VStack(alignment: .leading, spacing: 12) {
-                Text("Source Headroom")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-                
+                HStack(spacing: 8) {
+                    Text("Source Headroom")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+
+                    Spacer()
+
+                    if viewModel.isAutoTuning {
+                        if viewModel.autoTuneCurrentFile.isEmpty {
+                            // Single-image tune: indeterminate spinner.
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            // Batch tune: determinate bar.
+                            ProgressView(value: viewModel.autoTuneProgress)
+                                .controlSize(.small)
+                                .frame(width: 60)
+                        }
+                        Button("Cancel") {
+                            viewModel.cancelAutoTune()
+                        }
+                        .controlSize(.small)
+                    } else {
+                        Button("Auto") {
+                            viewModel.autoTuneSelectedImage()
+                        }
+                        .controlSize(.small)
+                        .disabled(!viewModel.isCurrentImageValid || viewModel.isExporting)
+                        .help("Find the lowest source headroom keeping per-channel clipping within the tolerance set in Preferences")
+
+                        Button("Auto all") {
+                            viewModel.autoTuneAllImages()
+                        }
+                        .controlSize(.small)
+                        .disabled(viewModel.images.count <= 1 || viewModel.isExporting)
+                        .help("Apply the Auto search to every loaded image (each image's own method and target headroom)")
+                    }
+                }
+                .confirmationDialog(
+                    "\(viewModel.autoTuneModifiedCount) image(s) already have hand-tuned settings",
+                    isPresented: $viewModel.showAutoTuneConfirmation
+                ) {
+                    Button("Re-tune all images") {
+                        viewModel.startAutoTuneAll(includeModified: true)
+                    }
+                    Button("Skip hand-tuned images") {
+                        viewModel.startAutoTuneAll(includeModified: false)
+                    }
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("Auto will overwrite their source-headroom parameter.")
+                }
+
+                if viewModel.isAutoTuning && !viewModel.autoTuneCurrentFile.isEmpty {
+                    Text("Auto-tuning \(viewModel.autoTuneCurrentFile)…")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 // Method picker
                 Picker("Method", selection: $settings.sourceHeadroomMethod) {
                     ForEach(ProcessingSettings.SourceHeadroomMethod.allCases, id: \.self) { method in
@@ -123,32 +178,38 @@ struct TonemapControlsSection: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .disabled(!viewModel.isCurrentImageValid)
+                .disabled(!viewModel.isCurrentImageValid || viewModel.isAutoTuning)
                 .onChange(of: settings.sourceHeadroomMethod) {
                     onSettingsChange()
                 }
-                
+
                 // Parameters based on selected method
                 switch settings.sourceHeadroomMethod {
                 case .peakMax:
                     PeakMaxControls(
                         settings: $settings,
                         onSettingsChange: onSettingsChange,
-                        isDisabled: !viewModel.isCurrentImageValid
+                        isDisabled: !viewModel.isCurrentImageValid || viewModel.isAutoTuning
                     )
                 case .percentile:
                     PercentileControls(
                         settings: $settings,
                         onSettingsChange: onSettingsChange,
-                        isDisabled: !viewModel.isCurrentImageValid
+                        isDisabled: !viewModel.isCurrentImageValid || viewModel.isAutoTuning
                     )
                 case .direct:
                     DirectSourceHeadroomControls(
                         settings: $settings,
                         measuredHeadroom: viewModel.measuredHeadroom,
                         onSettingsChange: onSettingsChange,
-                        isDisabled: !viewModel.isCurrentImageValid
+                        isDisabled: !viewModel.isCurrentImageValid || viewModel.isAutoTuning
                     )
+                }
+
+                if let note = viewModel.autoTuneNote {
+                    Text(note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
             }
             

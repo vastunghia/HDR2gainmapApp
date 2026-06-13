@@ -114,6 +114,15 @@ class MainViewModel {
     var isExporting = false
     var exportProgress: Double = 0.0
     var exportCurrentFile: String = ""
+
+    // Auto tone-mapping (single image + batch)
+    var isAutoTuning = false
+    var autoTuneProgress: Double = 0.0          // batch only
+    var autoTuneCurrentFile: String = ""        // batch only
+    var autoTuneNote: String?                   // transient user-facing note (clamps etc.)
+    var showAutoTuneConfirmation = false        // batch: some images were hand-tuned
+    var autoTuneModifiedCount = 0               // batch: how many of them
+    private var autoTuneTask: Task<Void, Never>?
     
     // Detailed clipping statistics
     var detailedClippingStats: HDRProcessor.DetailedClippingStats?
@@ -316,6 +325,7 @@ class MainViewModel {
         self.currentLeftCIImage = nil
         self.currentRightCIImage = nil
         self.clippingStats = nil
+        self.autoTuneNote = nil // the note describes the previous image's auto-tune
         self.isZoomed = false   // a new image starts at fit
 
         // Generate the preview first.
@@ -972,6 +982,99 @@ class MainViewModel {
         showExportSummary = true
     }
     
+    // MARK: - Auto tone-mapping
+
+    /// Searches the optimal source headroom for one image and writes it into its active method.
+    /// Returns a user-facing note (nil when the result needs no caveat).
+    private func autoTune(image: HDRImage) async throws -> String? {
+        let tolerance = HDRProcessor.autoClipToleranceFraction()
+        let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+        let result = try await processor.findAutoSourceHeadroom(
+            url: image.url,
+            targetHeadroom: targetHeadroom,
+            tolerance: tolerance
+        )
+        let outcome = await processor.applyAutoSourceHeadroom(result.sourceHeadroom, to: image.settings, url: image.url)
+        if !result.metTolerance {
+            return "Tolerance not reachable; kept the measured headroom"
+        }
+        return outcome.note
+    }
+
+    /// "Auto" button: tune the currently selected image.
+    func autoTuneSelectedImage() {
+        guard let image = selectedImage, isCurrentImageValid, !isExporting, !isAutoTuning else { return }
+        isAutoTuning = true
+        autoTuneNote = nil
+        autoTuneTask = Task {
+            defer { isAutoTuning = false }
+            do {
+                autoTuneNote = try await autoTune(image: image)
+                debouncedRefreshPreview()
+            } catch is CancellationError {
+                // user cancelled: nothing to report
+            } catch {
+                errorMessage = "Auto tone-mapping failed: \(error.localizedDescription)"
+                showError = true
+            }
+        }
+    }
+
+    /// "Auto all" button: tune every loaded image. Asks for confirmation first when some images
+    /// were already hand-tuned (the dialog then calls `startAutoTuneAll(includeModified:)`).
+    func autoTuneAllImages() {
+        guard !images.isEmpty, !isExporting, !isAutoTuning else { return }
+        let modified = images.filter { $0.settings.isModifiedFromDefaults }.count
+        if modified > 0 {
+            autoTuneModifiedCount = modified
+            showAutoTuneConfirmation = true
+        } else {
+            startAutoTuneAll(includeModified: true)
+        }
+    }
+
+    func startAutoTuneAll(includeModified: Bool) {
+        guard !isAutoTuning else { return }
+        let targets = includeModified ? images : images.filter { !$0.settings.isModifiedFromDefaults }
+        guard !targets.isEmpty else { return }
+        isAutoTuning = true
+        autoTuneNote = nil
+        autoTuneProgress = 0.0
+        autoTuneTask = Task {
+            defer {
+                isAutoTuning = false
+                autoTuneCurrentFile = ""
+            }
+            var failures: [String] = []
+            for (index, image) in targets.enumerated() {
+                if Task.isCancelled { break }
+                autoTuneCurrentFile = image.fileName
+                // Give SwiftUI a cycle to render the progress before the heavy work.
+                try? await Task.sleep(for: .milliseconds(32))
+                do {
+                    _ = try await autoTune(image: image)
+                } catch is CancellationError {
+                    break
+                } catch {
+                    failures.append(image.fileName)
+                }
+                autoTuneProgress = Double(index + 1) / Double(targets.count)
+            }
+            if !failures.isEmpty {
+                errorMessage = "Auto tone-mapping failed for: \(failures.joined(separator: ", "))"
+                showError = true
+            }
+            // The selected image's settings may have changed under the current preview.
+            if let image = selectedImage, targets.contains(where: { $0.url == image.url }) {
+                debouncedRefreshPreview()
+            }
+        }
+    }
+
+    func cancelAutoTune() {
+        autoTuneTask?.cancel()
+    }
+
     // MARK: - Clipping Legend / Stats Window
     
     private func showLegendWindowNative() {

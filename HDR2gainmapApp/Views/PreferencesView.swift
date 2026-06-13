@@ -16,6 +16,10 @@ struct PreferencesView: View {
     @AppStorage("pixelPeepZoomLevel")
     private var pixelPeepZoomLevel: Int = 200
 
+    /// Auto tone-mapping clip tolerance: percent of pixels allowed to be clipped in any single channel.
+    @AppStorage("autoClipTolerancePercent")
+    private var autoClipTolerancePercent: Double = 1.0
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
@@ -99,6 +103,29 @@ struct PreferencesView: View {
                          """)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    Divider()
+
+                    // Auto tone-mapping clip tolerance
+                    VStack(alignment: .leading, spacing: 8) {
+                        Picker("Auto Clip Tolerance", selection: $autoClipTolerancePercent) {
+                            Text("0.25%").tag(0.25)
+                            Text("0.5%").tag(0.5)
+                            Text("1%").tag(1.0)
+                            Text("2%").tag(2.0)
+                            Text("4%").tag(4.0)
+                        }
+                        .pickerStyle(.segmented)
+                        .fixedSize()
+                    }
+
+                    Text("""
+                         When using Auto tone mapping, the source headroom is lowered (brightening \
+                         the SDR base) until at most this fraction of pixels is clipped in any \
+                         single channel of the SDR output.
+                         """)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
                 .padding(14)
 
@@ -108,6 +135,7 @@ struct PreferencesView: View {
                         heicExportQuality = 0.95
                         gainMapSubsampleFactor = 2
                         pixelPeepZoomLevel = 200
+                        autoClipTolerancePercent = 1.0
                     }
                     .buttonStyle(.bordered)
                 }
@@ -116,7 +144,7 @@ struct PreferencesView: View {
             Spacer(minLength: 0)
         }
         .padding(24)
-        .frame(width: 640, height: 500)
+        .frame(width: 640, height: 620)
         .closeOnEscape()
     }
 }
