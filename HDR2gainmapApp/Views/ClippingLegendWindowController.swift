@@ -121,42 +121,43 @@ struct ClippingLegendContentView: View {
                             
                             Divider()
                             
-                            // Primary colors
+                            // Primary colors. The swatches use pure additive RGB so they match the
+                            // overlay mask painted on the preview and the RGB diagram above.
                             TwoColumnStatRow(
                                 label: "Red only",
-                                color: .red,
+                                color: Color(red: 1, green: 0, blue: 0),
                                 brightCount: stats.redOnly,
                                 dimCount: stats.redDim,
                                 total: stats.total
                             )
-                            
+
                             TwoColumnStatRow(
                                 label: "Green only",
-                                color: .green,
+                                color: Color(red: 0, green: 1, blue: 0),
                                 brightCount: stats.greenOnly,
                                 dimCount: stats.greenDim,
                                 total: stats.total
                             )
-                            
+
                             TwoColumnStatRow(
                                 label: "Blue only",
-                                color: .blue,
+                                color: Color(red: 0, green: 0, blue: 1),
                                 brightCount: stats.blueOnly,
                                 dimCount: stats.blueDim,
                                 total: stats.total
                             )
-                            
+
                             Divider()
-                            
-                            // Secondary colors
+
+                            // Secondary colors (pure additive R+G / R+B / G+B).
                             TwoColumnStatRow(
                                 label: "Yellow (R+G)",
-                                color: .yellow,
+                                color: Color(red: 1, green: 1, blue: 0),
                                 brightCount: stats.yellowBright,
                                 dimCount: stats.yellowDim,
                                 total: stats.total
                             )
-                            
+
                             TwoColumnStatRow(
                                 label: "Magenta (R+B)",
                                 color: Color(red: 1, green: 0, blue: 1),
@@ -164,10 +165,10 @@ struct ClippingLegendContentView: View {
                                 dimCount: stats.magentaDim,
                                 total: stats.total
                             )
-                            
+
                             TwoColumnStatRow(
                                 label: "Cyan (G+B)",
-                                color: .cyan,
+                                color: Color(red: 0, green: 1, blue: 1),
                                 brightCount: stats.cyanBright,
                                 dimCount: stats.cyanDim,
                                 total: stats.total
@@ -351,17 +352,18 @@ struct RGBDiagramView: View {
                 context.fill(path, with: .color(color))
             }
 
-            // Enable blend mode for additive color mixing
+            // Enable blend mode for additive color mixing. The lobes use pure RGB so the overlaps
+            // resolve to exactly pure Y/M/C/white — matching the overlay mask and the legend swatches.
             context.blendMode = .plusLighter
 
             // Red circle (top)
-            drawCircle(at: CGSize(width: 0, height: -radius * 0.5), color: .red)
+            drawCircle(at: CGSize(width: 0, height: -radius * 0.5), color: Color(red: 1, green: 0, blue: 0))
 
             // Green circle (bottom-left)
-            drawCircle(at: CGSize(width: -radius * 0.7 * sqrt(3.0)/2.0, height: radius * 0.7 * 0.5), color: .green)
+            drawCircle(at: CGSize(width: -radius * 0.7 * sqrt(3.0)/2.0, height: radius * 0.7 * 0.5), color: Color(red: 0, green: 1, blue: 0))
 
             // Blue circle (bottom-right)
-            drawCircle(at: CGSize(width: radius * 0.7 * sqrt(3.0)/2.0, height: radius * 0.7 * 0.5), color: .blue)
+            drawCircle(at: CGSize(width: radius * 0.7 * sqrt(3.0)/2.0, height: radius * 0.7 * 0.5), color: Color(red: 0, green: 0, blue: 1))
 
             // Reset blend mode for labels
             context.blendMode = .normal
