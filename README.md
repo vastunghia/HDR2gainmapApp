@@ -83,7 +83,7 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 - **Pixel-peeping zoom** (100 % / 200 % / 400 %, configurable) with click-to-zoom and drag-to-pan,
   available in every view.
 - **Real-time clipped-pixel overlay** (multi-color visualization highlighting which channels are
-  being clipped).
+  being clipped) with adjustable opacity.
 - **Live HDR and SDR histograms** with a Lightroom-style split-axis layout (sRGB curve for SDR,
   logarithmic for HDR) and an always-on clipping readout.
 - **Detailed clipping statistics** (always shown, including the count of clipped pixels by maxRGB)
@@ -288,7 +288,8 @@ A segmented selector at the top of the preview column switches the main preview 
 all of which update live (debounced) as you move the tone-mapping sliders:
 
 - **HDR Input** — the original HDR source, rendered in true HDR on capable displays (see EDR below).
-- **Tonemapped SDR** — the SDR base image, with the optional multi-color clipped-pixel overlay.
+- **Tonemapped SDR** — the SDR base image, with the multi-color clipped-pixel overlay (opacity
+  adjustable, including fully hidden).
 - **Gain Map** — the standalone gain map, so you can see exactly where (and how strongly) HDR detail
   is being encoded.
 - **SDR + Gain Map (Final Output)** — the HDR rendition *reconstructed from the SDR base and the gain
@@ -312,7 +313,7 @@ strays into the letterbox), and switching between Single and Compare keeps your 
 
 Each image remembers its own preview state: revisit one and it returns to exactly how you left it
 (Single or Compare, which view(s), zoom level and position), while an image you have never opened
-starts fresh in Single view on the tonemapped SDR base with the clipped-pixel overlay on.
+starts fresh in Single view on the tonemapped SDR base with the clipped-pixel overlay at 80% opacity.
 
 ### Pixel-peeping zoom
 
@@ -425,7 +426,9 @@ The overlay uses a **multi-color scheme** to identify which channels are clipped
 - **Dim variants** (50% intensity): Channel clipping with luminance ≥ 1.0
 - **Black**: All three channels clipped (maxRGB > 1.0)
 
-This allows precise diagnosis of clipping issues across the color gamut.
+This allows precise diagnosis of clipping issues across the color gamut. A **Clipped Pixel Overlay
+Opacity** slider (by the histograms) fades the overlay from fully opaque down to hidden, so you can
+inspect the underlying SDR base without losing the always-on clipping readout.
 
 ### Metal Acceleration
 
