@@ -20,9 +20,18 @@ struct ControlPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 // Settings header (consistent with Histograms header)
-                HStack {
+                HStack(spacing: 8) {
                     Text("Settings")
                         .font(.headline)
+
+                    Button {
+                        viewModel.showTonemapHelp()
+                    } label: {
+                        Image(systemName: "questionmark.circle")
+                    }
+                    .buttonStyle(.borderless)
+                    .help("What do these tone-mapping controls do?")
+
                     Spacer()
                 }
                 .padding(.horizontal, 16)

@@ -186,6 +186,19 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 - **Source Headroom**: The relative headroom of the input HDR image (ratio of peak luminance to reference HDR paper white, typically 203 nits)
 - **Target Headroom**: The desired headroom for the output (1.0 for standard SDR)
 
+#### Understanding the controls
+
+Two parameters shape the whole result — **Source Headroom** and **Target Headroom** — and everything else (the three methods, the sliders, the Auto button) is just a way to set them.
+
+- **Target Headroom** should be left at **1.0** in almost every case; it is not the creative control. It lives in its own *Advanced* section (off by default) and you can tweak it to push the look into extreme/creative territory, but as a rule it stays put.
+- **Source Headroom** is the key control. It decides **how many pixels clip** (exceed white) in the tone-mapped SDR base — which is exactly the trade-off you are dialing in:
+  - **Few clipped pixels** (at the limit, zero) → a faithful reconstruction of the image, both in the SDR base and — above all — in the HDR result (SDR + gain map), but an SDR base that may look **too dark**.
+  - **More clipped pixels** → an SDR base that is **brighter** on average, but the detail in the brightest parts of the image gets distorted ("mangled") in both the SDR base and the HDR reconstruction.
+
+The three methods below are simply three ways to arrive at a Source Headroom value; they all act on **that parameter only**. For the same resulting Source Headroom the output is identical, whichever method you used — so pick whichever feels most intuitive. (Target Headroom is set independently, in its own section.)
+
+> The same explanation is available in-app via the **?** button next to *Source Headroom*.
+
 #### Tone-Mapping Methods
 
 **Peak Max [applies to Source Headroom only]**
@@ -219,6 +232,14 @@ The application uses Apple's `CIToneMapHeadroom` filter from Core Image to gener
 - Useful for matching specific technical requirements or recreating known tone curves
 
 **In a nutshell:** this control lets you manually select source / target headroom specification.
+
+#### Automatic Source Headroom ("Auto")
+
+The **Auto** button picks the Source Headroom for you. It searches for the **lowest** Source Headroom that still keeps clipping within a small tolerance — specifically the fraction of pixels clipped in **any single R/G/B channel**, capped at the *per-channel clip tolerance* set in Preferences (default 1%).
+
+Working per channel (rather than on overall clipping) curbs single-channel clipping — for example a clipped red channel that would otherwise tint the highlights. As with setting it by hand, a **lower** tolerance yields a more faithful but darker SDR base, while a **higher** tolerance yields a brighter base with more clipping.
+
+The value Auto finds is written into the currently active method's parameter, so you can keep fine-tuning from there. **Auto all** runs the same search on every loaded image (each with its own active method and target headroom), processed in parallel across the machine's CPU cores.
 
 ### 2. Gain Map Generation
 

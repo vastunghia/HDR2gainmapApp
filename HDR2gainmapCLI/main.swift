@@ -12,6 +12,8 @@ struct CLIArguments {
     let gainMapSubsample: Int?
     let auto: Bool
     let autoTolerancePercent: Double?
+    let skipPreview: Bool   // experimental: skip generatePreview so the auto search runs cold (perf bench)
+    let searchOnly: Bool    // experimental: run the auto search then exit before export (perf bench)
 
     static func parse() -> CLIArguments? {
         let args = CommandLine.arguments
@@ -22,6 +24,8 @@ struct CLIArguments {
         var gainMapSubsample: Int? = nil
         var auto = false
         var autoTolerancePercent: Double? = nil
+        var skipPreview = false
+        var searchOnly = false
         var positionalArgs: [String] = []
 
         for arg in args.dropFirst() {
@@ -37,6 +41,10 @@ struct CLIArguments {
                 gainMapSubsample = v
             } else if arg == "--auto" {
                 auto = true
+            } else if arg == "--skip-preview" {
+                skipPreview = true
+            } else if arg == "--search-only" {
+                searchOnly = true
             } else if arg.hasPrefix("--auto-tolerance=") {
                 guard let v = Double(arg.dropFirst("--auto-tolerance=".count)), v > 0, v <= 100 else {
                     print("❌ Invalid value for --auto-tolerance: \(arg) (must be a percentage in (0, 100])")
@@ -62,7 +70,9 @@ struct CLIArguments {
             verify: verify,
             gainMapSubsample: gainMapSubsample,
             auto: auto,
-            autoTolerancePercent: autoTolerancePercent
+            autoTolerancePercent: autoTolerancePercent,
+            skipPreview: skipPreview,
+            searchOnly: searchOnly
         )
     }
     
@@ -193,12 +203,28 @@ func main() async {
             print("📊 Validating HDR image...")
         }
         
-        let _ = try await processor.generatePreview(for: image)
-        
-        if args.verbose {
+        if !args.skipPreview {
+            let previewStart = Date()
+            let _ = try await processor.generatePreview(for: image)
+            let previewElapsed = Date().timeIntervalSince(previewStart)
+            if args.verbose {
+                print("⏱  generatePreview (decode + headroom + render): \(String(format: "%.3f", previewElapsed))s wall")
+            }
+        } else if args.verbose {
+            print("⏭  generatePreview skipped (--skip-preview): auto search will run on a cold cache")
+            // Isolate the cold headroom-scan cost. This warms getHeadroomForImage, so the auto
+            // search that follows then measures loadHDR(cold) + renders only.
+            let hrStart = Date()
+            let hr = processor.getHeadroomForImage(url: inputURL)
+            print("⏱  getHeadroomForImage (cold scan): \(String(format: "%.3f", Date().timeIntervalSince(hrStart)))s wall (headroom \(String(format: "%.2f", hr)))")
+        }
+
+        if args.verbose && !args.skipPreview {
+            // Skipped under --skip-preview: this getHeadroomForImage call would warm the cache and
+            // hide the cold decode+headroom cost we want the auto search to measure.
             let headroom = processor.getHeadroomForImage(url: inputURL)
             print("   Headroom: \(String(format: "%.2f", headroom)) (\(String(format: "%.2f", log2(headroom))) stops)")
-            
+
             if let metadata = await image.loadMetadata() {
                 print("   Resolution: \(metadata.width)×\(metadata.height)")
                 print("   Color Space: \(metadata.colorSpace)")
@@ -213,11 +239,13 @@ func main() async {
         if args.auto {
             let tolerance = (args.autoTolerancePercent ?? HDRProcessor.defaultAutoClipTolerancePercent) / 100.0
             let targetHeadroom = image.settings.targetHeadroom ?? 1.0
+            let autoStart = Date()
             let result = try await processor.findAutoSourceHeadroom(
                 url: inputURL,
                 targetHeadroom: targetHeadroom,
                 tolerance: tolerance
             )
+            let autoElapsed = Date().timeIntervalSince(autoStart)
             image.settings.sourceHeadroomMethod = .direct
             image.settings.directSourceHeadroom = result.sourceHeadroom
             if args.verbose {
@@ -225,6 +253,8 @@ func main() async {
                       "(measured \(String(format: "%.3f", result.measuredHeadroom)), " +
                       "max per-channel clip \(String(format: "%.4f", result.clipFraction * 100))%, " +
                       "\(result.iterations) evaluations)")
+                print("⏱  Auto search: \(String(format: "%.3f", autoElapsed))s wall " +
+                      "(\(String(format: "%.1f", autoElapsed / Double(max(1, result.iterations)) * 1000)) ms/eval)")
                 if !result.metTolerance {
                     print("⚠️  Tolerance not reachable even at the measured headroom; using the measured value")
                 }
@@ -232,13 +262,21 @@ func main() async {
             }
         }
 
+        if args.searchOnly {
+            exit(0)  // perf bench: stop before export
+        }
+
         // Export
         if args.verbose {
             print("🔄 Exporting to HEIC with gain map...")
         }
         
+        let exportStart = Date()
         try await processor.exportImage(image, to: outputURL)
-        
+        if args.verbose {
+            print("⏱  exportImage (encode + ISO + write): \(String(format: "%.3f", Date().timeIntervalSince(exportStart)))s wall")
+        }
+
         print("✅ Export successful: \(outputURL.path)")
         
         // Verify if requested
@@ -268,9 +306,73 @@ func main() async {
     }
 }
 
+// MARK: - Batch parallelism benchmark (experimental)
+
+/// Headless harness to measure the auto-tune throughput of a folder of inputs at a chosen
+/// concurrency. Runs only the auto-tune work (`findAutoSourceHeadroom`) — no export — which is
+/// exactly the per-image cost of the GUI "Auto all" batch. Usage:
+///   HDR2gainmapCLI --bench --bench-dir=<folder> [--concurrency=N] [--auto-tolerance=PCT]
+@MainActor
+func runBenchmark() async {
+    let argv = CommandLine.arguments
+    var dir: String? = nil
+    var concurrency = HDRProcessor.defaultAutoConcurrency()
+    var tolerancePct = HDRProcessor.defaultAutoClipTolerancePercent
+    for a in argv {
+        if a.hasPrefix("--bench-dir=") { dir = String(a.dropFirst("--bench-dir=".count)) }
+        else if a.hasPrefix("--concurrency=") { concurrency = max(1, Int(a.dropFirst("--concurrency=".count)) ?? 1) }
+        else if a.hasPrefix("--auto-tolerance=") { tolerancePct = Double(a.dropFirst("--auto-tolerance=".count)) ?? tolerancePct }
+    }
+    guard let dir else {
+        print("❌ --bench requires --bench-dir=<folder>")
+        exit(1)
+    }
+    let folder = URL(fileURLWithPath: dir, isDirectory: true)
+    let exts: Set<String> = ["png", "tif", "tiff"]
+    let urls = ((try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [])
+        .filter { exts.contains($0.pathExtension.lowercased()) }
+        .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    guard !urls.isEmpty else {
+        print("❌ No png/tif/tiff files in \(folder.path)")
+        exit(1)
+    }
+
+    let tol = tolerancePct / 100.0
+    let processor = HDRProcessor.shared
+    print("🏁 Benchmark: \(urls.count) images, concurrency=\(concurrency) " +
+          "(physical cores=\(HDRProcessor.physicalCoreCount()), auto=\(HDRProcessor.defaultAutoConcurrency())), " +
+          "tolerance=\(tolerancePct)%")
+
+    final class FailBox: @unchecked Sendable { var n = 0 }
+    let fails = FailBox()
+    let jobs = urls.map { (url: $0, targetHeadroom: Float(1.0)) }
+
+    let verifySH = argv.contains("--bench-print-sh")
+    let start = Date()
+    await processor.autoSearchBatch(jobs: jobs, tolerance: tol, concurrency: concurrency) { index, url, result in
+        switch result {
+        case .failure: fails.n += 1
+        case .success(let r):
+            if verifySH {
+                print(String(format: "   [%02d] %@  sH=%.3f (clip %.4f%%)",
+                             index, url.lastPathComponent, r.sourceHeadroom, r.clipFraction * 100))
+            }
+        }
+    }
+    let elapsed = Date().timeIntervalSince(start)
+    let n = Double(urls.count)
+    print(String(format: "⏱  Total: %.2fs | %.3fs/img | %.2f img/s | failures: %d",
+                 elapsed, elapsed / n, n / elapsed, fails.n))
+    exit(0)
+}
+
 // Start async main
 Task { @MainActor in
-    await main()
+    if CommandLine.arguments.contains("--bench") {
+        await runBenchmark()
+    } else {
+        await main()
+    }
 }
 
 // Keep the process running

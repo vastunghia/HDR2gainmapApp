@@ -34,6 +34,36 @@ enum PreviewMode: String, CaseIterable, Sendable {
 
 }
 
+// MARK: - Per-worker search resources (batch parallelism)
+
+/// Self-contained GPU resources for one concurrent auto-search worker: its own CIContext and
+/// Metal histogram calculator. Sharing the singletons across a TaskGroup serializes on the
+/// CIContext and the histogram's NSLock (measured: in-process parallelism caps ~1.5×); one set
+/// per worker unlocks near-linear scaling (measured ~3× at 6 workers, matching separate processes).
+///
+/// Declared at file scope and explicitly `nonisolated` so the type and its `init` stay off the
+/// main actor: this target builds with default-isolation = MainActor, which would otherwise infer
+/// main-actor isolation here and trip Swift 6 concurrency in the nonisolated search code.
+nonisolated final class SearchResources: @unchecked Sendable {
+    let ctx: CIContext
+    let histogram: MetalHistogramCalculator?
+    init(workingColorSpace: CGColorSpace) {
+        ctx = CIContext(options: [.workingColorSpace: workingColorSpace,
+                                  .outputColorSpace: workingColorSpace])
+        histogram = MetalHistogramCalculator()
+    }
+}
+
+/// Task-local holder for the resources the current task should use during the auto search. Set
+/// per-task by the batch via `withValue`; `nil` (the single-image path) falls back to the shared
+/// singletons, so behavior outside the batch is unchanged. Lives in a non-isolated namespace so the
+/// projected `$current` is referenceable from the nonisolated search code (Swift 6 safe). The enum
+/// is marked `nonisolated` so its `@TaskLocal` (and its projected value) escapes the target's
+/// default-isolation = MainActor.
+nonisolated enum SearchResourcesContext {
+    @TaskLocal static var current: SearchResources?
+}
+
 /// Bridge between the CLI pipeline and SwiftUI; orchestrates HDR image processing.
 @MainActor
 class HDRProcessor {
@@ -142,6 +172,15 @@ class HDRProcessor {
     nonisolated private let ctx_linear_p3: CIContext
 
     nonisolated private let encode_ctx = CIContext()
+
+    // MARK: Per-worker search resources (batch parallelism)
+
+    /// CIContext / histogram for the current task: per-worker inside a batch (via the
+    /// `SearchResourcesContext` task-local), shared singletons otherwise.
+    nonisolated private var searchCtx: CIContext { SearchResourcesContext.current?.ctx ?? ctx_linear_p3 }
+    nonisolated private var searchHistogram: MetalHistogramCalculator? {
+        SearchResourcesContext.current?.histogram ?? metalHistogram
+    }
 
     private init() {
         ctx_linear_p3 = CIContext(options: [.workingColorSpace: linear_p3,
@@ -1000,6 +1039,26 @@ class HDRProcessor {
         return (pct > 0 ? pct : defaultAutoClipTolerancePercent) / 100.0
     }
 
+    /// Physical CPU cores (not logical/Hyper-Threaded), for sizing batch concurrency.
+    nonisolated static func physicalCoreCount() -> Int {
+        var count: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        if sysctlbyname("hw.physicalcpu", &count, &size, nil, 0) == 0, count > 0 {
+            return Int(count)
+        }
+        return max(1, ProcessInfo.processInfo.activeProcessorCount)
+    }
+
+    /// Default worker count for the batch auto search: physical cores, bounded by a memory budget
+    /// (each worker holds a full-res decode + RGBAf materialization in flight, ≈0.7 GB) and a sane
+    /// absolute cap. Adapts to the host so non-6-core machines aren't over- or under-subscribed.
+    nonisolated static func defaultAutoConcurrency() -> Int {
+        let cores = physicalCoreCount()
+        let ramGB = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824.0
+        let ramCap = max(2, Int(ramGB * 0.5 / 0.7))   // ~50% of RAM at ~0.7 GB/worker
+        return max(1, min(cores, ramCap, 16))
+    }
+
     /// Worst per-channel clip fraction (0...1) of the SDR rendering: `max(frac_R, frac_G, frac_B)`,
     /// where `frac_c` is the fraction of pixels whose channel c exceeds 1+eps (counted independently
     /// of the other channels). Limiting this curbs single-channel clipping (e.g. a clipped R channel
@@ -1038,7 +1097,7 @@ class HDRProcessor {
             guard let sdr = tonemap_sdr(from: hdr, sourceHeadroom: sourceHeadroom, targetHeadroom: targetHeadroom) else {
                 throw ProcessingError.tonemapFailed
             }
-            return maxPerChannelClipFraction(sdr: sdr, context: ctx_linear_p3)
+            return maxPerChannelClipFraction(sdr: sdr, context: searchCtx)
         }
 
         // No HDR content: nothing to search.
@@ -1081,6 +1140,50 @@ class HDRProcessor {
         }
         return AutoHeadroomResult(sourceHeadroom: hi, measuredHeadroom: measured,
                                   clipFraction: fHi, iterations: iterations, metTolerance: true)
+    }
+
+    /// Runs the auto search over many images with bounded concurrency, each worker using its own
+    /// `SearchResources` (CIContext + histogram) so the work parallelizes instead of serializing on
+    /// the shared singletons. `onEach` is invoked on the main actor as each image finishes (for the
+    /// GUI to apply the result + advance progress); it receives the original index, the URL and the
+    /// search result (or the error/cancellation). Honors cancellation of the calling task.
+    @concurrent nonisolated func autoSearchBatch(
+        jobs: [(url: URL, targetHeadroom: Float)],
+        tolerance: Double,
+        concurrency: Int,
+        onEach: @escaping @Sendable @MainActor (_ index: Int, _ url: URL, _ result: Result<AutoHeadroomResult, Error>) async -> Void
+    ) async {
+        guard !jobs.isEmpty else { return }
+        let k = max(1, min(concurrency, jobs.count))
+        let pool = (0..<k).map { _ in SearchResources(workingColorSpace: linear_p3) }
+
+        await withTaskGroup(of: Int.self) { group in
+            var next = 0
+            // Submits the job at `next` on the given worker slot; returns the slot when it finishes.
+            func submit(slot: Int) {
+                guard next < jobs.count, !Task.isCancelled else { return }
+                let index = next; next += 1
+                let job = jobs[index]
+                group.addTask {
+                    let outcome: Result<AutoHeadroomResult, Error>
+                    do {
+                        let r = try await SearchResourcesContext.$current.withValue(pool[slot]) {
+                            try await self.findAutoSourceHeadroom(
+                                url: job.url, targetHeadroom: job.targetHeadroom, tolerance: tolerance)
+                        }
+                        outcome = .success(r)
+                    } catch {
+                        outcome = .failure(error)
+                    }
+                    await onEach(index, job.url, outcome)
+                    return slot
+                }
+            }
+            for slot in 0..<k { submit(slot: slot) }
+            while let freedSlot = await group.next() {
+                submit(slot: freedSlot)
+            }
+        }
     }
 
     /// Writes `sourceHeadroom` into the parameter of the currently active source-headroom method.
@@ -1158,10 +1261,10 @@ class HDRProcessor {
         
         // print("    RawData obtained: \(rawData.width)×\(rawData.height), \(rawData.bytes.count) bytes")
         
-        // Try Metal first.
+        // Try Metal first (per-worker calculator inside a batch, shared otherwise).
         let peakNits: Float
 
-        if let metalCalc = metalHistogram,
+        if let metalCalc = searchHistogram,
            let metalPeak = metalCalc.calculatePeakLuminance(
             fromBytes: rawData.bytes,
             width: rawData.width,
@@ -1861,8 +1964,8 @@ class HDRProcessor {
             throw ProcessingError.invalidColorSpace(cs_name(fileCI.colorSpace))
         }
         
-        // Materialize in linear P3
-        guard let residentCG = ctx_linear_p3.createCGImage(
+        // Materialize in linear P3 (per-worker context inside a batch, shared otherwise).
+        guard let residentCG = searchCtx.createCGImage(
             fileCI,
             from: fileCI.extent,
             format: .RGBAf,

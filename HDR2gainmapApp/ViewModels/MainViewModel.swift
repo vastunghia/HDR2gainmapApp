@@ -138,8 +138,9 @@ class MainViewModel {
         }
     }
     
-    // Native window controller
+    // Native window controllers
     private var legendWindowController: ClippingLegendWindowController?
+    private var tonemapHelpWindowController: TonemapHelpWindowController?
     
     var measuredHeadroomRaw: Float = 1.0    // Raw headroom value measured from the HDR file
     var measuredHeadroom: Float = 1.0       // Clamped convenience value (always ≥ 1.0)
@@ -1033,6 +1034,13 @@ class MainViewModel {
         }
     }
 
+    /// Main-actor accumulator for batch progress/failures, shared with the `autoSearchBatch`
+    /// callback (which is main-actor-isolated, so all access stays on one actor).
+    private final class AutoBatchAccum: @unchecked Sendable {
+        var failures: [String] = []
+        var completed = 0
+    }
+
     func startAutoTuneAll(includeModified: Bool) {
         guard !isAutoTuning else { return }
         let targets = includeModified ? images : images.filter { !$0.settings.isModifiedFromDefaults }
@@ -1040,28 +1048,34 @@ class MainViewModel {
         isAutoTuning = true
         autoTuneNote = nil
         autoTuneProgress = 0.0
+
+        let tolerance = HDRProcessor.autoClipToleranceFraction()
+        let jobs = targets.map { (url: $0.url, targetHeadroom: $0.settings.targetHeadroom ?? Float(1.0)) }
+        let total = targets.count
+        let concurrency = HDRProcessor.defaultAutoConcurrency()
+        let accum = AutoBatchAccum()
+
         autoTuneTask = Task {
             defer {
                 isAutoTuning = false
                 autoTuneCurrentFile = ""
             }
-            var failures: [String] = []
-            for (index, image) in targets.enumerated() {
-                if Task.isCancelled { break }
-                autoTuneCurrentFile = image.fileName
-                // Give SwiftUI a cycle to render the progress before the heavy work.
-                try? await Task.sleep(for: .milliseconds(32))
-                do {
-                    _ = try await autoTune(image: image)
-                } catch is CancellationError {
-                    break
-                } catch {
-                    failures.append(image.fileName)
+            // Each worker uses its own CIContext + histogram (see HDRProcessor.autoSearchBatch), so
+            // the images process in parallel instead of serializing on the shared singletons.
+            await processor.autoSearchBatch(jobs: jobs, tolerance: tolerance, concurrency: concurrency) { index, _, result in
+                let image = targets[index]
+                switch result {
+                case .success(let r):
+                    _ = await self.processor.applyAutoSourceHeadroom(r.sourceHeadroom, to: image.settings, url: image.url)
+                case .failure(let error):
+                    if !(error is CancellationError) { accum.failures.append(image.fileName) }
                 }
-                autoTuneProgress = Double(index + 1) / Double(targets.count)
+                accum.completed += 1
+                self.autoTuneProgress = Double(accum.completed) / Double(total)
+                self.autoTuneCurrentFile = image.fileName
             }
-            if !failures.isEmpty {
-                errorMessage = "Auto tone-mapping failed for: \(failures.joined(separator: ", "))"
+            if !accum.failures.isEmpty {
+                errorMessage = "Auto tone-mapping failed for: \(accum.failures.joined(separator: ", "))"
                 showError = true
             }
             // The selected image's settings may have changed under the current preview.
@@ -1087,7 +1101,17 @@ class MainViewModel {
     private func hideLegendWindowNative() {
         legendWindowController?.hide()
     }
-    
+
+    // MARK: - Tone-Mapping Help Window
+
+    /// Opens (or re-focuses) the non-modal tone-mapping help panel.
+    func showTonemapHelp() {
+        if tonemapHelpWindowController == nil {
+            tonemapHelpWindowController = TonemapHelpWindowController()
+        }
+        tonemapHelpWindowController?.show()
+    }
+
 }
 
 // MARK: - Export Results
