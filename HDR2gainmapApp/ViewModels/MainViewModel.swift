@@ -193,6 +193,9 @@ class MainViewModel {
     private var refreshTask: Task<Void, Never>?
     private var histogramTask: Task<Void, Never>?
     private let refreshDebounceInterval: TimeInterval = 0.3
+    // Debounce for the overlay-opacity slider (preview-only; histograms/stats are opacity-independent).
+    private var overlayRefreshTask: Task<Void, Never>?
+    private let overlayRefreshDebounceInterval: TimeInterval = 0.05
 
     // Background pre-load of the images adjacent to the current selection.
     private var prefetchTask: Task<Void, Never>?
@@ -395,7 +398,7 @@ class MainViewModel {
                 isZoomed: false,
                 zoomAnchorUnit: CGPoint(x: 0.5, y: 0.5)
             ))
-            image.settings.showClippedOverlay = true
+            image.settings.overlayOpacity = 0.8
         }
 
         // Generate the preview first.
@@ -645,8 +648,21 @@ class MainViewModel {
     //        }
     //    }
     
+    /// Debounced, cancellable preview-only refresh for the overlay-opacity slider. Dragging fires
+    /// many changes; we coalesce them and re-render only the preview (the SDR base + clipping stats
+    /// are opacity-independent and stay cached). Deliberately does NOT call `markSettingsDirty()` —
+    /// overlay opacity is a visualization preference, like the old toggle.
+    func debouncedRefreshOverlayOnly() {
+        overlayRefreshTask?.cancel()
+        overlayRefreshTask = Task {
+            try? await Task.sleep(for: .milliseconds(Int(overlayRefreshDebounceInterval * 1000)))
+            guard !Task.isCancelled else { return }
+            refreshPreviewOnly()
+        }
+    }
+
     /// Refreshes the preview without regenerating histograms.
-    /// Used for the `showClippedOverlay` toggle (visual overlay only).
+    /// Used for the overlay-opacity slider (visual overlay only).
     func refreshPreviewOnly() {
         guard let image = self.selectedImage else {
             return

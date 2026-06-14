@@ -71,7 +71,10 @@ class ProcessingSettings {
     }
     
     // MARK: - Visualization
-    var showClippedOverlay: Bool = true
+    /// Opacity of the colorized clipped-pixel overlay on the SDR preview: 0 = hidden,
+    /// 1 = fully opaque. Purely a display preference (not part of `isModifiedFromDefaults`
+    /// nor the exported settings profile).
+    var overlayOpacity: Float = 0.8
     var overlayColor: String = "magenta"
     
     // MARK: - Export

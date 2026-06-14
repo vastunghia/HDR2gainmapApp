@@ -46,16 +46,27 @@ struct HistogramView: View {
                 // Clipped pixels toggle and stats
                 if let selectedImage = viewModel.selectedImage {
                     VStack(alignment: .leading, spacing: 8) {
-                        // Toggle
-                        Toggle("Show clipped pixels", isOn: Binding(
-                            get: { selectedImage.settings.showClippedOverlay },
-                            set: { selectedImage.settings.showClippedOverlay = $0 }
-                        ))
+                        // Clipped-pixel overlay opacity: 0 = hidden, 1 = fully opaque.
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text("Clipped Pixel Overlay Opacity")
+                                    .font(.caption)
+                                Spacer()
+                                Text("\(Int((selectedImage.settings.overlayOpacity * 100).rounded()))%")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .monospacedDigit()
+                            }
+                            Slider(value: Binding(
+                                get: { Double(selectedImage.settings.overlayOpacity) },
+                                set: {
+                                    selectedImage.settings.overlayOpacity = Float($0)
+                                    viewModel.debouncedRefreshOverlayOnly()
+                                }
+                            ), in: 0...1)
+                        }
                         // The clipping overlay applies only to the SDR tone-mapped view.
                         .disabled(!viewModel.isCurrentImageValid || viewModel.previewMode != .sdrTonemapped)
-                        .onChange(of: selectedImage.settings.showClippedOverlay) {
-                            viewModel.refreshPreviewOnly()
-                        }
                         
                         // Legend button
                         Button(action: {
