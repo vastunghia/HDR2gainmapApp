@@ -115,11 +115,13 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 <summary><b>Workflow &amp; navigation</b></summary>
 
 - **Batch export** with progress tracking and the option to append a string of your choice to all
-  file names.
+  file names; the running batch can be **cancelled** at any time (the current file finishes, then it
+  stops, and a summary reports what was done).
 - **Export / import development settings**: save the per-image tone-mapping "develop" settings of a
   whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing
   a look across machines (only images you actually customized are stored; any images listed in the
-  profile but missing from the folder are reported on import).
+  profile but missing from the folder are reported on import). If you close the window or quit with
+  unsaved customizations, the app **offers to export your settings first**.
 - **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the
   previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view).
 - **Thumbnail status badges**: a **"settings modified"** badge flags thumbnails whose tone-mapping
@@ -305,7 +307,12 @@ view selector, so you can tell at a glance how much HDR range your display is cu
 Toggle the **Single / Compare** switch to put two views side by side, split by a draggable divider.
 Drag any of the four view chips onto the left or right half to assign it (the prefilled pairing is
 *HDR Input* vs *Final Output*), then drag the divider to wipe between them — the quickest way to
-confirm the final output matches your intent.
+confirm the final output matches your intent. The divider is constrained to the image (it never
+strays into the letterbox), and switching between Single and Compare keeps your current zoom.
+
+Each image remembers its own preview state: revisit one and it returns to exactly how you left it
+(Single or Compare, which view(s), zoom level and position), while an image you have never opened
+starts fresh in Single view on the tonemapped SDR base with the clipped-pixel overlay on.
 
 ### Pixel-peeping zoom
 
@@ -332,6 +339,10 @@ session. To preserve them — or carry them to another machine — you can expor
 Both actions are available from the **File menu** (Export Settings ⇧⌘E / Import Settings ⇧⌘I),
 from the **export panel**, and — for import — directly from the **start screen**, so you can
 reopen a folder straight from a saved profile.
+
+As a safety net, if you try to **close the window or quit** while one or more images carry
+customizations that have not been exported (or imported) since your last change, the app asks
+whether you want to export your settings first — so a session's work is never lost by accident.
 
 ## System Requirements
 

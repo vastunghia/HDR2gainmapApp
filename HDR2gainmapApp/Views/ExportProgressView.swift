@@ -3,7 +3,10 @@ import SwiftUI
 struct ExportProgressView: View {
     let progress: Double
     let currentFile: String
-    
+    /// When set, a Cancel button is shown to interrupt the batch export.
+    var onCancel: (() -> Void)? = nil
+    @State private var didRequestCancel = false
+
     var body: some View {
         ZStack {
             // Semi-transparent background
@@ -47,6 +50,16 @@ struct ExportProgressView: View {
                             .truncationMode(.middle)
                             .frame(maxWidth: 280)
                     }
+                }
+
+                // Cancel the batch (the current file finishes, then the export stops).
+                if let onCancel {
+                    Button(didRequestCancel ? "Cancelling…" : "Cancel") {
+                        didRequestCancel = true
+                        onCancel()
+                    }
+                    .controlSize(.large)
+                    .disabled(didRequestCancel)
                 }
             }
             .padding(40)

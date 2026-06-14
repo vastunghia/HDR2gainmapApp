@@ -603,7 +603,7 @@ struct ExportSection: View {
                     HStack(spacing: 8) {
                         TextField("e.g., \"processed\" or \"_v2\"", text: Binding(
                             get: { selectedImage.settings.filenameSuffix },
-                            set: { selectedImage.settings.filenameSuffix = $0 }
+                            set: { selectedImage.settings.filenameSuffix = $0; viewModel.markSettingsDirty() }
                         ))
                         .textFieldStyle(.roundedBorder)
                         .font(.subheadline)
@@ -725,6 +725,7 @@ struct ExportSection: View {
         for image in viewModel.images {
             image.settings.filenameSuffix = suffix
         }
+        viewModel.markSettingsDirty()
     }
 }
 

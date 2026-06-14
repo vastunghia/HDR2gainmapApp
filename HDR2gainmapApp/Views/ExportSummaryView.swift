@@ -8,11 +8,13 @@ struct ExportSummaryView: View {
         VStack(spacing: 0) {
             // Header
             VStack(spacing: 12) {
-                Image(systemName: results.failedCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                Image(systemName: results.cancelled ? "stop.circle.fill"
+                      : (results.failedCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"))
                     .font(.system(size: 60))
-                    .foregroundStyle(results.failedCount == 0 ? .green : .orange)
-                
-                Text("Export Complete")
+                    .foregroundStyle(results.cancelled ? .orange
+                                     : (results.failedCount == 0 ? .green : .orange))
+
+                Text(results.cancelled ? "Export Cancelled" : "Export Complete")
                     .font(.title)
                     .fontWeight(.bold)
             }
@@ -30,6 +32,9 @@ struct ExportSummaryView: View {
                 }
                 if results.failedCount > 0 {
                     StatRow(label: "Failed", value: "\(results.failedCount)", color: .red)
+                }
+                if results.cancelled && results.notProcessedCount > 0 {
+                    StatRow(label: "Not processed", value: "\(results.notProcessedCount)", color: .secondary)
                 }
             }
             .padding(.vertical, 20)

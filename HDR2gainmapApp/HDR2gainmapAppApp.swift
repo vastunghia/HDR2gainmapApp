@@ -2,6 +2,10 @@ import SwiftUI
 
 @main
 struct HDR2gainmapApp: App {
+    // Intercepts Quit to offer exporting unsaved settings first (window-close is handled per-window
+    // by SessionWindowGuard). See SessionTerminationGuard.swift.
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()

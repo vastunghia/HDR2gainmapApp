@@ -29,7 +29,10 @@ struct ContentView: View {
             if viewModel.selectedImage != nil {
                 viewModel.refreshMeasuredHeadroom()
             }
+            SessionCoordinator.shared.activeViewModel = viewModel
         }
+        // Intercept the window's close button to offer exporting unsaved settings first.
+        .background(SessionWindowGuard(viewModel: viewModel))
         // Expose this window's view model to the menu commands (File ▸ Export/Import Settings),
         // so they act on the frontmost window.
         .focusedSceneValue(\.mainViewModel, viewModel)
@@ -133,7 +136,9 @@ struct MainInterfaceView: View {
             .contentShape(Capsule())
 
         if viewModel.isComparison {
+            // Open-hand cursor reminds the user these chips are dragged onto a half, not clicked.
             chip.draggable(mode.rawValue)
+                .cursor(.openHand)
         } else {
             chip.onTapGesture {
                 viewModel.previewMode = mode
@@ -173,7 +178,9 @@ struct MainInterfaceView: View {
 
                     // Preview selector: the same chips in both modes (no layout jump). In Single a
                     // click selects the view; in Compare each chip is dragged onto a half.
-                    Text("Available previews")
+                    Text(viewModel.isComparison
+                         ? "Available previews - Drag and Drop buttons to compare two preview types"
+                         : "Available previews")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 12)
@@ -239,7 +246,8 @@ struct MainInterfaceView: View {
                 if viewModel.isExporting {
                     ExportProgressView(
                         progress: viewModel.exportProgress,
-                        currentFile: viewModel.exportCurrentFile
+                        currentFile: viewModel.exportCurrentFile,
+                        onCancel: { viewModel.cancelExport() }
                     )
                 }
             }

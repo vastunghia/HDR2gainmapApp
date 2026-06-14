@@ -51,6 +51,37 @@ class MainViewModel {
     var currentLeftCIImage: CIImage?
     var currentRightCIImage: CIImage?
 
+    /// Per-image snapshot of the preview pane's view-state, so returning to an image restores how it
+    /// was left (Single/Compare, which previews, zoom). Keyed by `HDRImage.id`; absence = never seen.
+    private struct PreviewViewState {
+        var isComparison: Bool
+        var previewMode: PreviewMode
+        var comparisonLeftMode: PreviewMode
+        var comparisonRightMode: PreviewMode
+        var comparisonSplit: CGFloat
+        var isZoomed: Bool
+        var zoomAnchorUnit: CGPoint
+    }
+    private var previewStates: [UUID: PreviewViewState] = [:]
+
+    /// Snapshots the live preview view-state (for persisting the outgoing image's).
+    private func capturePreviewState() -> PreviewViewState {
+        PreviewViewState(isComparison: isComparison, previewMode: previewMode,
+                         comparisonLeftMode: comparisonLeftMode, comparisonRightMode: comparisonRightMode,
+                         comparisonSplit: comparisonSplit, isZoomed: isZoomed, zoomAnchorUnit: zoomAnchorUnit)
+    }
+
+    /// Applies a snapshot back onto the live preview view-state (for restoring an incoming image's).
+    private func applyPreviewState(_ s: PreviewViewState) {
+        isComparison = s.isComparison
+        previewMode = s.previewMode
+        comparisonLeftMode = s.comparisonLeftMode
+        comparisonRightMode = s.comparisonRightMode
+        comparisonSplit = s.comparisonSplit
+        isZoomed = s.isZoomed
+        zoomAnchorUnit = s.zoomAnchorUnit
+    }
+
     /// Zoom in toward a point given as a top-left unit coordinate (0…1) within the image.
     func zoom(toUnitPoint p: CGPoint) {
         zoomAnchorUnit = CGPoint(x: min(max(p.x, 0), 1), y: min(max(p.y, 0), 1))
@@ -65,10 +96,12 @@ class MainViewModel {
 
     // MARK: - Comparison (double view)
 
-    /// Switches between single and comparison view, regenerating the preview.
+    /// Switches between single and comparison view, regenerating the preview. The zoom state
+    /// (`isZoomed` + `zoomAnchorUnit`) is deliberately preserved across the switch — both surfaces
+    /// share it, and the anchor is a mode-independent unit coordinate — so toggling modes keeps the
+    /// current zoom level and position.
     func setComparison(_ on: Bool) {
         isComparison = on
-        isZoomed = false
         guard let image = self.selectedImage else { return }
         Task { await generatePreview(for: image, refreshHistograms: true) }
     }
@@ -114,6 +147,7 @@ class MainViewModel {
     var isExporting = false
     var exportProgress: Double = 0.0
     var exportCurrentFile: String = ""
+    private var exportTask: Task<Void, Never>?
 
     // Auto tone-mapping (single image + batch)
     var isAutoTuning = false
@@ -198,6 +232,11 @@ class MainViewModel {
     
     // MARK: - Folder Selection
     
+    /// UserDefaults key remembering the last image folder opened (across windows), so the picker
+    /// returns there instead of, e.g., a settings-export destination that polluted the shared
+    /// "last used" directory of the save panels.
+    private static let lastInputFolderKey = "lastInputFolderPath"
+
     /// Presents a panel to pick the input folder containing HDR PNGs.
     func selectInputFolder() {
         let panel = NSOpenPanel()
@@ -205,7 +244,13 @@ class MainViewModel {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.message = "Select folder containing HDR PNG/TIFF images"
-        
+
+        // Start at the last image folder we opened (this session, else persisted from a prior one),
+        // rather than inheriting whatever directory a save panel last used.
+        if let path = inputFolderURL?.path ?? UserDefaults.standard.string(forKey: Self.lastInputFolderKey) {
+            panel.directoryURL = URL(fileURLWithPath: path, isDirectory: true)
+        }
+
         panel.begin { [weak self] response in
             guard let self = self else { return }
             if response == .OK, let url = panel.url {
@@ -244,6 +289,9 @@ class MainViewModel {
             // Create HDRImage objects without triggering thumbnail generation yet.
             self.images = pngFiles.map { HDRImage(url: $0, loadThumbnailImmediately: false) }
             self.inputFolderURL = folderURL
+            UserDefaults.standard.set(folderURL.path, forKey: Self.lastInputFolderKey)
+            self.previewStates.removeAll() // drop any prior folder's per-image preview view-states
+            self.settingsExported = false  // fresh working set (import sets it true afterwards)
 
             // Apply an imported profile, collecting file names with no match in this folder.
             var missing: [String] = []
@@ -317,6 +365,11 @@ class MainViewModel {
         // A new selection takes priority over any in-flight background prefetch.
         prefetchTask?.cancel()
 
+        // Persist the outgoing image's preview view-state before switching away from it.
+        if let previous = self.selectedImage {
+            previewStates[previous.id] = capturePreviewState()
+        }
+
         // Switch selection (triggers a headroom refresh via `didSet`).
         self.selectedImage = image
 
@@ -327,7 +380,23 @@ class MainViewModel {
         self.currentRightCIImage = nil
         self.clippingStats = nil
         self.autoTuneNote = nil // the note describes the previous image's auto-tune
-        self.isZoomed = false   // a new image starts at fit
+
+        // Restore the preview view-state if this image was seen before; otherwise present the default
+        // for a never-seen image: Single, SDR-tonemapped, clipping mask on, no zoom (divider centered).
+        if let saved = previewStates[image.id] {
+            applyPreviewState(saved)
+        } else {
+            applyPreviewState(PreviewViewState(
+                isComparison: false,
+                previewMode: .sdrTonemapped,
+                comparisonLeftMode: comparisonLeftMode,
+                comparisonRightMode: comparisonRightMode,
+                comparisonSplit: 0.5,
+                isZoomed: false,
+                zoomAnchorUnit: CGPoint(x: 0.5, y: 0.5)
+            ))
+            image.settings.showClippedOverlay = true
+        }
 
         // Generate the preview first.
         let tPrev = Prof.tic()
@@ -621,7 +690,11 @@ class MainViewModel {
     /// Histograms are refreshed after the preview completes.
     func debouncedRefreshPreview() {
         // print("\n⏱️ [debouncedRefreshPreview] CALLED")
-        
+
+        // Any settings edit funnels through here (ControlPanel onSettingsChange, reset-to-defaults,
+        // auto-tune) → the settings now diverge from any exported/imported profile.
+        markSettingsDirty()
+
         if refreshTask != nil {
             // print("   🔄 Cancelling previous refresh task")
             refreshTask?.cancel()
@@ -761,10 +834,27 @@ class MainViewModel {
     
     // MARK: - Settings Profile (export / import)
 
+    /// True once the current settings have been written to (or loaded from) a JSON profile, and not
+    /// touched since. Starts false, set true after a successful export/import, reset to false on any
+    /// settings change (`markSettingsDirty`). Drives the "export before closing?" prompt: that prompt
+    /// only appears when this is false. See [[SessionTerminationGuard]].
+    private(set) var settingsExported = false
+
+    /// Marks the in-memory settings as diverged from any exported/imported profile.
+    func markSettingsDirty() { settingsExported = false }
+
+    /// Whether closing the session should offer to export: there is at least one non-default image
+    /// and those settings have not been exported/imported since the last change.
+    func hasUnsavedSettingsToExport() -> Bool {
+        !settingsExported && images.contains { $0.settings.isModifiedFromDefaults }
+    }
+
     /// Exports the per-image tone-mapping settings of the loaded folder to a JSON profile.
     /// Only images whose core settings differ from the defaults are included.
-    func exportSettingsProfile() {
-        guard !images.isEmpty else { return }
+    /// `completion` reports whether a file was actually written (false on cancel/failure) — used by
+    /// the close/quit guard to decide whether to proceed.
+    func exportSettingsProfile(completion: ((Bool) -> Void)? = nil) {
+        guard !images.isEmpty else { completion?(false); return }
 
         let folderURL = inputFolderURL ?? images.first?.url.deletingLastPathComponent()
         let folderPath = folderURL?.path ?? ""
@@ -796,8 +886,8 @@ class MainViewModel {
         panel.message = "Choose where to save the tone-mapping settings profile"
 
         panel.begin { [weak self] response in
-            guard let self else { return }
-            guard response == .OK, let url = panel.url else { return }
+            guard let self else { completion?(false); return }
+            guard response == .OK, let url = panel.url else { completion?(false); return }
 
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -805,9 +895,12 @@ class MainViewModel {
             do {
                 let data = try encoder.encode(profile)
                 try data.write(to: url, options: .atomic)
+                self.settingsExported = true
+                completion?(true)
             } catch {
                 self.errorMessage = "Failed to save settings profile: \(error.localizedDescription)"
                 self.showError = true
+                completion?(false)
             }
         }
     }
@@ -862,6 +955,8 @@ class MainViewModel {
                 // loadImagesFromFolder surfaces the "missing images" warning itself, early.
                 Task {
                     await self.loadImagesFromFolder(folderURL, applying: profile)
+                    // The in-memory settings now correspond to the just-imported profile on disk.
+                    self.settingsExported = true
                 }
             }
         }
@@ -891,7 +986,7 @@ class MainViewModel {
         panel.begin { [weak self] response in
             guard let self = self else { return }
             if response == .OK, let url = panel.url {
-                Task {
+                self.exportTask = Task {
                     await self.performExport(images: [image], outputFolder: url.deletingLastPathComponent())
                 }
             }
@@ -911,22 +1006,26 @@ class MainViewModel {
         panel.begin { [weak self] response in
             guard let self = self else { return }
             if response == .OK, let url = panel.url {
-                Task {
+                self.exportTask = Task {
                     await self.performExport(images: self.images, outputFolder: url)
                 }
             }
         }
     }
     
+    /// Cancels an in-progress batch export (finishes the image currently being written, then stops).
+    func cancelExport() { exportTask?.cancel() }
+
     /// Performs export for a list of images.
     private func performExport(images: [HDRImage], outputFolder: URL) async {
         isExporting = true
         exportProgress = 0.0
-        
+
         var succeeded: [String] = []
         var failed: [(String, String)] = []
         var skipped: [String] = []
-        
+        var cancelled = false
+
         let totalCount = images.count
         guard totalCount > 0 else {
             isExporting = false
@@ -934,10 +1033,13 @@ class MainViewModel {
             showExportSummary = true
             return
         }
-        
+
         for (index, image) in images.enumerated() {
+            // Stop before starting the next image if the user cancelled.
+            if Task.isCancelled { cancelled = true; break }
+
             exportCurrentFile = image.fileName
-            
+
             // Gives control to MainActor for one cycle,
             // so that SwiftUI can render the overlay before
             // starting the hard work
@@ -978,7 +1080,8 @@ class MainViewModel {
             total: totalCount,
             succeeded: succeeded,
             failed: failed,
-            skipped: skipped
+            skipped: skipped,
+            cancelled: cancelled
         )
         showExportSummary = true
     }
@@ -1121,8 +1224,11 @@ struct ExportResults {
     let succeeded: [String]
     let failed: [(fileName: String, reason: String)]
     let skipped: [String]
-    
+    var cancelled: Bool = false
+
     var successCount: Int { succeeded.count }
     var failedCount: Int { failed.count }
     var skippedCount: Int { skipped.count }
+    /// Images not reached because the batch was cancelled.
+    var notProcessedCount: Int { max(0, total - successCount - failedCount - skippedCount) }
 }

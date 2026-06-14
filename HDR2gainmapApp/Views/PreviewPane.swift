@@ -25,7 +25,7 @@ struct PreviewPane: View {
                     // Preview is available - with conditional overlay above
                     GeometryReader { geo in
                         ZStack {
-                            previewContent()
+                            previewContent(in: geo.size)
                                 .frame(width: geo.size.width, height: geo.size.height)
                             if viewModel.isComparison {
                                 comparisonOverlays(in: geo.size)
@@ -169,7 +169,7 @@ struct PreviewPane: View {
     /// The image surface: the Metal renderer (all views — activates EDR for HDR and supports zoom),
     /// with a SwiftUI `Image` fallback when Metal/CIImage is unavailable.
     @ViewBuilder
-    private func previewContent() -> some View {
+    private func previewContent(in size: CGSize) -> some View {
         if viewModel.isComparison {
             EDRMetalImageView(
                 ciImage: nil,
@@ -180,7 +180,7 @@ struct PreviewPane: View {
                 isComparison: true,
                 leftImage: viewModel.currentLeftCIImage,
                 rightImage: viewModel.currentRightCIImage,
-                splitFraction: viewModel.comparisonSplit
+                splitFraction: clampedSplit(in: size)
             )
         } else if EDRMetalImageView.isSupported, let ciImage = viewModel.currentPreviewCIImage {
             EDRMetalImageView(
@@ -216,12 +216,13 @@ struct PreviewPane: View {
         }
         .allowsHitTesting(false)
 
-        // Divider line (non-interactive) at the split.
+        // Divider line (non-interactive) at the split, clamped to the image's horizontal extent.
+        let dividerX = clampedSplit(in: size) * size.width
         Rectangle()
             .fill(.white.opacity(0.9))
             .frame(width: 1.5, height: size.height)
             .shadow(color: .black.opacity(0.5), radius: 1)
-            .position(x: viewModel.comparisonSplit * size.width, y: size.height / 2)
+            .position(x: dividerX, y: size.height / 2)
             .allowsHitTesting(false)
 
         // Divider grip (draggable). High priority so it wins over the pan/zoom gesture beneath.
@@ -234,13 +235,35 @@ struct PreviewPane: View {
                     .foregroundStyle(.black)
             )
             .shadow(color: .black.opacity(0.4), radius: 2)
-            .position(x: viewModel.comparisonSplit * size.width, y: size.height / 2)
+            .position(x: dividerX, y: size.height / 2)
             .highPriorityGesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.previewSpace))
                     .onChanged { v in
-                        viewModel.comparisonSplit = min(max(v.location.x / size.width, 0), 1)
+                        let range = comparisonSplitRange(in: size)
+                        viewModel.comparisonSplit = min(max(v.location.x / size.width,
+                                                            range.lowerBound), range.upperBound)
                     }
             )
+    }
+
+    /// Horizontal fraction range [lo, hi] of the view where the image is actually drawn, used to keep
+    /// the comparison divider over the image rather than in the aspect-fit letterbox. When zoomed the
+    /// image covers the whole viewport, so the full width is valid.
+    private func comparisonSplitRange(in size: CGSize) -> ClosedRange<CGFloat> {
+        guard size.width > 0 else { return 0...1 }
+        if viewModel.isZoomed { return 0...1 }
+        guard let rect = imageDisplayRect(in: size) else { return 0...1 }
+        let lo = max(0, rect.minX / size.width)
+        let hi = min(1, rect.maxX / size.width)
+        return lo <= hi ? lo...hi : 0...1
+    }
+
+    /// The stored split clamped to the image's horizontal extent. Applied at display/render time too
+    /// (not just on drag) so the divider never sits in the letterbox after a zoom change or a window
+    /// resize leaves a previously-valid split out of range.
+    private func clampedSplit(in size: CGSize) -> CGFloat {
+        let r = comparisonSplitRange(in: size)
+        return min(max(viewModel.comparisonSplit, r.lowerBound), r.upperBound)
     }
 
     private func comparisonLabel(_ text: String) -> some View {
@@ -262,11 +285,17 @@ struct PreviewPane: View {
         return true
     }
 
-    /// Reference image extent (pixels) for gesture geometry: single preview, else a comparison side.
+    /// Reference image extent (pixels) for gesture geometry: a comparison side in Compare mode, else
+    /// the single preview. Must be mode-aware: `currentPreviewCIImage` is not refreshed in Compare
+    /// mode (the single-render branch is skipped), so it can hold a stale previous image — using it
+    /// here would clamp the divider to the wrong aspect ratio after switching photos.
     private func referenceExtent() -> CGRect? {
+        if viewModel.isComparison {
+            if let e = viewModel.currentLeftCIImage?.extent, e.width > 0, e.height > 0 { return e }
+            if let e = viewModel.currentRightCIImage?.extent, e.width > 0, e.height > 0 { return e }
+            return nil
+        }
         if let e = viewModel.currentPreviewCIImage?.extent, e.width > 0, e.height > 0 { return e }
-        if let e = viewModel.currentLeftCIImage?.extent, e.width > 0, e.height > 0 { return e }
-        if let e = viewModel.currentRightCIImage?.extent, e.width > 0, e.height > 0 { return e }
         return nil
     }
 
@@ -348,6 +377,14 @@ struct PreviewPane: View {
         if isPanning { return }
         switch phase {
         case .active(let location):
+            // The comparison divider grip: an open-hand cursor signals it's draggable.
+            if viewModel.isComparison {
+                let gripCenter = CGPoint(x: clampedSplit(in: size) * size.width, y: size.height / 2)
+                if hypot(location.x - gripCenter.x, location.y - gripCenter.y) <= 15 {
+                    NSCursor.openHand.set()
+                    return
+                }
+            }
             // When zoomed the image fills the area; otherwise restrict to the fit rect.
             let overImage = viewModel.isZoomed || (imageDisplayRect(in: size)?.contains(location) ?? false)
             if overImage {
