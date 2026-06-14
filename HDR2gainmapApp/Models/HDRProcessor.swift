@@ -907,6 +907,10 @@ class HDRProcessor {
         }
         let peakNits = max(0.001, peakHeadroom * Constants.referenceHDRwhiteNit)
         
+        // The percentile CDF reader assumes 16-bit components (pixel stride = cpp × 2). Bail on
+        // anything else (mirrors calculatePeakLuminanceNits) so we never read past an 8-bit buffer.
+        guard rawData.bitsPerComponent == 16 else { return false }
+
         let bytes = rawData.bytes
         let width = rawData.width
         let height = rawData.height
@@ -1955,7 +1959,7 @@ class HDRProcessor {
         
         // Also load image properties (for metadata; avoids re-reading).
         
-        // 2) Cache raw data (for fast histograms).
+        // 2) Build raw data (for fast histograms).
         let rawData = RawPixelData(
             width: width,
             height: height,
@@ -1967,12 +1971,17 @@ class HDRProcessor {
             properties: properties
         )
 
+        // 3) Create and cache a CIImage from raw data (no additional I/O). This also VALIDATES the
+        //    color space and throws for non-HDR inputs. Do it BEFORE caching the raw bytes so an
+        //    invalid (e.g. 8-bit / non-PQ) image never lands in rawDataCache, where the
+        //    16-bit-assuming readers (percentile CDF, headroom, histograms) would later crash on it.
+        let residentCI = try createCIImageFromRawData(rawData, key: key)
+
         let byteCost = dataLength / (1024 * 1024)  // MB
         // Self.rawDataCache.totalCostLimit = 1024  // Max 1GB
         Self.rawDataCache.setObject(rawData, forKey: key, cost: byteCost)
 
-        // 3) Create and cache a CIImage from raw data (no additional I/O).
-        return try createCIImageFromRawData(rawData, key: key)
+        return residentCI
     }
     
     /// Helper: create a linear Display P3 CIImage from already-loaded RawPixelData.
