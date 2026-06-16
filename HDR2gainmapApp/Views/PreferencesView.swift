@@ -20,6 +20,10 @@ struct PreferencesView: View {
     @AppStorage("autoClipTolerancePercent")
     private var autoClipTolerancePercent: Double = 1.0
 
+    /// When enabled, the app checks GitHub Releases for a newer version at launch (at most once a day).
+    @AppStorage("automaticUpdateCheck")
+    private var automaticUpdateCheck: Bool = true
+
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Preferences")
@@ -136,6 +140,32 @@ struct PreferencesView: View {
                         gainMapSubsampleFactor = 2
                         pixelPeepZoomLevel = 200
                         autoClipTolerancePercent = 1.0
+                        automaticUpdateCheck = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Updates")
+                        .font(.headline)
+
+                    Toggle("Check for updates automatically", isOn: $automaticUpdateCheck)
+
+                    Text("""
+                         When enabled, the app checks GitHub for a newer release at launch \
+                         (at most once a day) and notifies you only if one is available.
+                         """)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(14)
+
+                HStack {
+                    Spacer()
+                    Button("Check Now") {
+                        UpdateChecker.checkManually()
                     }
                     .buttonStyle(.bordered)
                 }

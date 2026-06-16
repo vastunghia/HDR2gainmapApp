@@ -43,6 +43,11 @@ enum SessionExportPrompt {
 /// App delegate that intercepts Quit (⌘Q / menu) to offer exporting settings first.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Throttled, preference-gated; only surfaces an alert when a newer version exists.
+        UpdateChecker.checkAutomatically()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let viewModel = SessionCoordinator.shared.activeViewModel,
               viewModel.hasUnsavedSettingsToExport() else {

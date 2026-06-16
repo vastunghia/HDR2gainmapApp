@@ -66,8 +66,6 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 - **🗂️ Batch-friendly** — batch export with progress tracking, plus exportable/importable
   per-image "develop" settings profiles to resume work or share a look across machines.
 
-![HDR2gainmap App — tone-mapping sliders](screenshots/screenshot_sliders.png)
-
 ## Full feature list
 
 <details>

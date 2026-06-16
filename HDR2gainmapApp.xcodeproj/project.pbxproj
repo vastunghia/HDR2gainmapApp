@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		4931E2022EBB3C8B00A525D8 /* QuickLookThumbnailing.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4931E2012EBB3C8B00A525D8 /* QuickLookThumbnailing.framework */; };
+		49FACADE0000000000000011 /* README.md in Resources */ = {isa = PBXBuildFile; fileRef = 49FACADE0000000000000001 /* README.md */; };
+		49FACADE0000000000000012 /* screenshots in Resources */ = {isa = PBXBuildFile; fileRef = 49FACADE0000000000000002 /* screenshots */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -45,6 +47,8 @@
 		49A019DC2EA821E900A03362 /* HDR2gainmapAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49A019E62EA821E900A03362 /* HDR2gainmapAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49CA990B2EEA2A2300296138 /* HistogramShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; name = HistogramShaders.metal; path = HDR2gainmapApp/Utilities/HistogramShaders.metal; sourceTree = "<group>"; };
+			49FACADE0000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
+			49FACADE0000000000000002 /* screenshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = screenshots; sourceTree = SOURCE_ROOT; };
 		49EE586E2F2365F6009E65E0 /* HDR2gainmapCLI */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HDR2gainmapCLI; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -326,6 +330,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				49FACADE0000000000000011 /* README.md in Resources */,
+				49FACADE0000000000000012 /* screenshots in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -527,7 +533,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
@@ -545,7 +551,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 2.1.0;
+				MARKETING_VERSION = 2.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = it.vastunghia.HDR2gainmapApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -575,7 +581,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
 				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
@@ -593,7 +599,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 2.1.0;
+				MARKETING_VERSION = 2.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = it.vastunghia.HDR2gainmapApp;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

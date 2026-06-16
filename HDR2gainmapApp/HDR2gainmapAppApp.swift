@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 @main
 struct HDR2gainmapApp: App {
@@ -12,12 +13,21 @@ struct HDR2gainmapApp: App {
         }
         .commands {
             SettingsProfileCommands()
+            AppInfoCommands()
+            HelpMenuCommands()
         }
 
         Settings {
             PreferencesView()
         }
     }
+}
+
+// MARK: - GitHub repository
+
+/// Single source of truth for the project's public links.
+enum GitHubRepo {
+    static let url = URL(string: "https://github.com/vastunghia/HDR2gainmapApp")!
 }
 
 // MARK: - Focused value plumbing for menu commands
@@ -52,6 +62,59 @@ struct SettingsProfileCommands: Commands {
             }
             .keyboardShortcut("i", modifiers: [.command, .shift])
             .disabled(viewModel == nil)
+        }
+    }
+}
+
+/// App menu ▸ custom About panel (with a clickable GitHub link) + "Check for Updates…".
+struct AppInfoCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .appInfo) {
+            Button("About HDR2gainmapApp") {
+                NSApplication.shared.orderFrontStandardAboutPanel(options: [
+                    .credits: Self.creditsAttributedString
+                ])
+            }
+        }
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                UpdateChecker.checkManually()
+            }
+        }
+    }
+
+    /// Credits shown in the standard About panel, carrying a tappable link to the repo.
+    private static var creditsAttributedString: NSAttributedString {
+        let result = NSMutableAttributedString(
+            string: "Native macOS HDR → gain-map HEIC converter.\n\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .foregroundColor: NSColor.secondaryLabelColor
+            ]
+        )
+        let link = NSAttributedString(
+            string: "View on GitHub",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                .link: GitHubRepo.url
+            ]
+        )
+        result.append(link)
+        return result
+    }
+}
+
+/// Help menu ▸ links to the online README and the GitHub repository (replaces the
+/// default, empty "HDR2gainmapApp Help" item that shows "Help isn't available").
+struct HelpMenuCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("HDR2gainmapApp Help") {
+                HelpWindowController.present()
+            }
+            Button("GitHub Repository") {
+                NSWorkspace.shared.open(GitHubRepo.url)
+            }
         }
     }
 }
