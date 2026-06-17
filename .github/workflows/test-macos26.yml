@@ -17,8 +17,10 @@ jobs:
         include:
           - runner: macos-26
             os_label: macos26
+          - runner: macos-15
+            os_label: macos15-arm
           - runner: macos-15-intel
-            os_label: macos15
+            os_label: macos15-intel
 
     env:
       OS_LABEL: ${{ matrix.os_label }}
