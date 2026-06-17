@@ -8,21 +8,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-cli-export-macos26:
-    name: Test on macOS 26
-    runs-on: macos-26
-    
+  test-cli-export:
+    name: Test on ${{ matrix.os_label }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            os_label: macos26
+          - runner: macos-15-intel
+            os_label: macos15
+
+    env:
+      OS_LABEL: ${{ matrix.os_label }}
+      INPUT: TestAssets/test_in_desert.png
+      RESULTS_DIR: TestAssets/results
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
         lfs: true
-    
+
     - name: Setup Xcode
       uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: "26.2" # latest-stable
-    
+
     - name: Display system information
       run: |
         echo "=== System Information ==="
@@ -33,23 +46,16 @@ jobs:
         echo ""
         echo "=== Metal Support ==="
         system_profiler SPDisplaysDataType 2>/dev/null | grep -i "metal" || echo "Metal info not available"
-        echo ""
-        echo "=== GPU Information ==="
-        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "chipset" || echo "GPU info not available"
 
-    # ✅ Verifica semplicemente che i file committati esistano
-    - name: Verify test HDR images exist
+    - name: Verify test HDR image exists
       run: |
-        for img in TestAssets/test_in.png TestAssets/test_in_desert.png; do
-          if [ -f "$img" ]; then
-            echo "✅ Test HDR image found: $img"
-            ls -lh "$img"
-          else
-            echo "❌ Test HDR image not found: $img"
-            echo "Make sure it is committed (Git LFS)."
-            exit 1
-          fi
-        done
+        if [ -f "$INPUT" ]; then
+          echo "✅ Test HDR image found: $INPUT"
+          ls -lh "$INPUT"
+        else
+          echo "❌ Test HDR image not found: $INPUT (make sure it is committed via Git LFS)."
+          exit 1
+        fi
 
     # Xcode 26 ships the Metal toolchain as a separate downloadable component; the build
     # compiles HistogramShaders.metal, so fetch it first (no-op if already installed).
@@ -77,152 +83,59 @@ jobs:
         echo "✅ Found CLI at: $CLI_PATH"
         chmod +x "$CLI_PATH"
 
-    - name: Run export tests
+    # Export the same input four ways — {full, half} gain-map resolution × {mono, RGB} gain map —
+    # always with Auto tone-mapping. HEIC quality is left unset so the engine uses its 0.95 default.
+    #
+    # The CLI persists the gainMapRGB / gainMapSubsampleFactor preferences into UserDefaults, which
+    # survive between invocations on the same runner. So we (a) always pass --gainmap-subsample
+    # explicitly, and (b) run the two mono cases *before* the two RGB cases — once --rgb sets the flag
+    # it stays set, but we never need it back off, so no run is contaminated.
+    - name: Run export tests (4 combinations)
       run: |
-        CLI_PATH="${{ steps.cli_path.outputs.cli_path }}"
+        set -euo pipefail
+        CLI="${{ steps.cli_path.outputs.cli_path }}"
+        mkdir -p "$RESULTS_DIR"
 
-        echo "🧪 Running export test (test_in.png)..."
-        "$CLI_PATH" \
-          TestAssets/test_in.png \
-          TestAssets/test_out_macos26.heic \
-          --verbose
+        run() {
+          local res="$1" ch="$2"; shift 2
+          local out="$RESULTS_DIR/desert_${OS_LABEL}_${res}_${ch}_auto_q95.heic"
+          echo "::group::export ${res} ${ch} → $out"
+          "$CLI" "$INPUT" "$out" --auto --verbose "$@"
+          echo "::endgroup::"
+        }
 
-        echo "🧪 Running export test (test_in_desert.png)..."
-        "$CLI_PATH" \
-          TestAssets/test_in_desert.png \
-          TestAssets/test_out_desert_macos26.heic \
-          --verbose
+        run full mono --gainmap-subsample=1
+        run half mono --gainmap-subsample=2
+        run full rgb  --gainmap-subsample=1 --rgb
+        run half rgb  --gainmap-subsample=2 --rgb
 
-    - name: Verify exported images with standalone script
+        echo "📦 Produced:"
+        ls -lh "$RESULTS_DIR"/desert_${OS_LABEL}_*.heic
+
+    - name: Verify exported images
       run: |
-        echo "🔍 Running standalone verification (test_in)..."
-        swift Scripts/verify_export.swift TestAssets/test_out_macos26.heic
-        echo "🔍 Running standalone verification (test_in_desert)..."
-        swift Scripts/verify_export.swift TestAssets/test_out_desert_macos26.heic
-
-    - name: Upload test artifacts
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-outputs-macos26
-        path: |
-          TestAssets/test_out_macos26.heic
-          TestAssets/test_out_desert_macos26.heic
-        retention-days: 7
-    
-    # - name: Setup tmate debug session
-    #   if: failure()
-    #   uses: mxschmitt/action-tmate@v3
-    #   timeout-minutes: 30
-    #   with:
-    #     limit-access-to-actor: true
-
-  test-cli-export-macos15:
-    name: Test on macOS 15 (Intel)
-    runs-on: macos-15-intel
-
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        lfs: true
-    
-    - name: Setup Xcode
-      uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: "26.2" # latest-stable
-
-    - name: Display system information
-      run: |
-        echo "=== System Information ==="
-        sw_vers || true
-        echo ""
-        echo "=== Xcode Version ==="
-        xcodebuild -version || true
-        echo ""
-        echo "=== Metal Support ==="
-        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "metal" || echo "Metal info not available"
-        echo ""
-        echo "=== GPU Information ==="
-        system_profiler SPDisplaysDataType 2>/dev/null | grep -i "chipset" || echo "GPU info not available"
-
-    # ✅ Verifica semplicemente che i file committati esistano
-    - name: Verify test HDR images exist
-      run: |
-        for img in TestAssets/test_in.png TestAssets/test_in_desert.png; do
-          if [ -f "$img" ]; then
-            echo "✅ Test HDR image found: $img"
-            ls -lh "$img"
+        set -uo pipefail
+        fail=0
+        for f in "$RESULTS_DIR"/desert_${OS_LABEL}_*.heic; do
+          echo "::group::verify $f"
+          if swift Scripts/verify_export.swift "$f"; then
+            echo "✅ $f"
           else
-            echo "❌ Test HDR image not found: $img"
-            echo "Make sure it is committed (Git LFS)."
-            exit 1
+            echo "❌ $f FAILED verification"
+            fail=1
           fi
+          echo "::endgroup::"
         done
-
-    # Xcode 26 ships the Metal toolchain as a separate downloadable component; the build
-    # compiles HistogramShaders.metal, so fetch it first (no-op if already installed).
-    - name: Download Metal toolchain
-      run: xcodebuild -downloadComponent MetalToolchain
-
-    - name: Build CLI tool
-      run: |
-        echo "🔨 Building HDR2gainmapCLI..."
-        xcodebuild \
-          -project HDR2gainmapApp.xcodeproj \
-          -scheme HDR2gainmapCLI \
-          -configuration Release \
-          -derivedDataPath ./build \
-          clean build \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
-
-    - name: Locate CLI binary
-      id: cli_path
-      run: |
-        CLI_PATH=$(find ./build/Build/Products/Release -name "HDR2gainmapCLI" -type f | head -n 1)
-        echo "cli_path=$CLI_PATH" >> $GITHUB_OUTPUT
-        echo "✅ Found CLI at: $CLI_PATH"
-        chmod +x "$CLI_PATH"
-
-    - name: Run export tests
-      run: |
-        CLI_PATH="${{ steps.cli_path.outputs.cli_path }}"
-
-        echo "🧪 Running export test (test_in.png)..."
-        "$CLI_PATH" \
-          TestAssets/test_in.png \
-          TestAssets/test_out_macos15.heic \
-          --verbose
-
-        echo "🧪 Running export test (test_in_desert.png)..."
-        "$CLI_PATH" \
-          TestAssets/test_in_desert.png \
-          TestAssets/test_out_desert_macos15.heic \
-          --verbose
-
-    - name: Verify exported images with standalone script
-      run: |
-        echo "🔍 Running standalone verification (test_in)..."
-        swift Scripts/verify_export.swift TestAssets/test_out_macos15.heic
-        echo "🔍 Running standalone verification (test_in_desert)..."
-        swift Scripts/verify_export.swift TestAssets/test_out_desert_macos15.heic
+        if [ "$fail" -ne 0 ]; then
+          echo "❌ One or more outputs failed verification"
+          exit 1
+        fi
+        echo "✅ All outputs verified"
 
     - name: Upload test artifacts
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: test-outputs-macos15
-        path: |
-          TestAssets/test_out_macos15.heic
-          TestAssets/test_out_desert_macos15.heic
+        name: test-outputs-${{ matrix.os_label }}
+        path: ${{ env.RESULTS_DIR }}/desert_${{ matrix.os_label }}_*.heic
         retention-days: 7
-    
-    # - name: Setup tmate debug session
-    #   if: failure()
-    #   uses: mxschmitt/action-tmate@v3
-    #   timeout-minutes: 30
-    #   with:
-    #     limit-access-to-actor: true
-      

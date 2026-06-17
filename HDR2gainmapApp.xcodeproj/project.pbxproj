@@ -47,9 +47,9 @@
 		49A019DC2EA821E900A03362 /* HDR2gainmapAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49A019E62EA821E900A03362 /* HDR2gainmapAppUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = HDR2gainmapAppUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		49CA990B2EEA2A2300296138 /* HistogramShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; name = HistogramShaders.metal; path = HDR2gainmapApp/Utilities/HistogramShaders.metal; sourceTree = "<group>"; };
-			49FACADE0000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
-			49FACADE0000000000000002 /* screenshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = screenshots; sourceTree = SOURCE_ROOT; };
 		49EE586E2F2365F6009E65E0 /* HDR2gainmapCLI */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = HDR2gainmapCLI; sourceTree = BUILT_PRODUCTS_DIR; };
+		49FACADE0000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = SOURCE_ROOT; };
+		49FACADE0000000000000002 /* screenshots */ = {isa = PBXFileReference; lastKnownFileType = folder; path = screenshots; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -150,6 +150,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		491522382FE18185001A451F /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				49FACADE0000000000000001 /* README.md */,
+				49FACADE0000000000000002 /* screenshots */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		4931E2002EBB3C8B00A525D8 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -169,6 +178,7 @@
 				4931E2002EBB3C8B00A525D8 /* Frameworks */,
 				49A019D02EA821E700A03362 /* Products */,
 				49A7F3642EE30245008B671F /* HDR2gainmapApp */,
+				491522382FE18185001A451F /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};

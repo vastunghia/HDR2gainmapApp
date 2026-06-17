@@ -20,6 +20,9 @@ struct HDR2gainmapApp: App {
         Settings {
             PreferencesView()
         }
+        // The Settings scene is fixed-to-content by default; this lets it be resized down to the
+        // content's min size and up freely (paired with EnableWindowResize, which adds the handle).
+        .windowResizability(.contentMinSize)
     }
 }
 

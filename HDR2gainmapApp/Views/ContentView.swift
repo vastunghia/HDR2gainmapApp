@@ -119,6 +119,10 @@ struct MainInterfaceView: View {
 
     // Comparison help dialog (shown on entering Compare unless dismissed permanently).
     @AppStorage("hideComparisonHelp") private var hideComparisonHelp = false
+
+    /// Mirrors the export preference. The gain-map–dependent previews ("Gain Map" / "Final Output")
+    /// differ between the mono and RGB gain maps, so toggling this in Settings must re-render them.
+    @AppStorage("gainMapRGB") private var gainMapRGB = false
     @State private var showComparisonHelp = false
 
     /// A preview-mode chip — identical in both modes. In Single it's tappable (selected highlighted);
@@ -258,6 +262,10 @@ struct MainInterfaceView: View {
             )
             // M marks / unmarks the current image as "ready for export".
             .markKeyShortcut { viewModel.toggleMarkForSelected() }
+            // Switching mono ↔ RGB gain map (in Settings) changes the "Gain Map" / "Final Output"
+            // previews; the cache key now folds the pref in, so a re-render picks the right variant.
+            // Covers both single and Compare views and shows the loading spinner.
+            .onChange(of: gainMapRGB) { viewModel.refreshAfterGainMapKindChange() }
         }
     }
 }

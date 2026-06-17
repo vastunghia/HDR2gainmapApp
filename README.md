@@ -104,7 +104,7 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 
 - **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR
   captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
-- **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×).
+- **Configurable gain map resolution** (full 1× by default for maximum fidelity, or half ½× to shrink the file).
 - **Metadata preserved** in output files.
 
 </details>
@@ -262,14 +262,14 @@ Once the gain map has been generated, the app writes the final HEIC by combining
 
 1. **In-memory encode.** The SDR base and the original HDR are encoded to an in-memory HEIC buffer via `CIContext.heif10Representation()` on macOS 26 or later, or via the 10-bit `CIContext.heifRepresentation()` on earlier systems (selected automatically). Core Image computes and embeds the gain map here; nothing touches the disk yet.
 
-2. **Re-encode to disk via ImageIO.** That in-memory buffer is then re-encoded: the gain map is optionally subsampled to the requested resolution (½× by default — see Preferences below) and embedded under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot, with matching ISO 21496-1 binary metadata. The primary image is preserved unchanged. This is the only write to disk.
+2. **Re-encode to disk via ImageIO.** That in-memory buffer is then re-encoded: the gain map is kept at full resolution by default (or optionally subsampled — see Preferences below) and embedded under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot, with matching ISO 21496-1 binary metadata. The primary image is preserved unchanged. This is the only write to disk.
 
 > **Note:** earlier versions wrote the HEIC to disk first and then reopened it to re-encode — an extra full-size write that has since been collapsed into the in-memory step above.
 
 Two export settings are configurable in the Preferences window:
 
 - **HEIC Quality** — the HEIF compression quality (default: 0.95); higher quality produces larger files with better fidelity.
-- **Gain Map Resolution** — whether the gain map is stored at half (½×, the default, matching Apple's native HDR captures) or full (1×) image resolution. A gain map is smooth and low-detail, so half resolution shrinks the file with minimal visual impact.
+- **Gain Map Resolution** — whether the gain map is stored at full (1×, the default) or half (½×) image resolution. Full keeps every detail; half shrinks the file but softens highlight detail, where the gain map does most of its work.
 
 A preview setting is also available there:
 
