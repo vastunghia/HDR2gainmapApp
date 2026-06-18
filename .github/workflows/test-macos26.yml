@@ -6,6 +6,11 @@ on:
   # pull_request:
   #   branches: [ main ]
   workflow_dispatch:
+    inputs:
+      input_image:
+        description: "Input HDR image to export (repo-relative path)"
+        required: false
+        default: TestAssets/test_in_desert.png
 
 jobs:
   test-cli-export:
@@ -24,7 +29,7 @@ jobs:
 
     env:
       OS_LABEL: ${{ matrix.os_label }}
-      INPUT: TestAssets/test_in_desert.png
+      INPUT: ${{ inputs.input_image }}
       RESULTS_DIR: TestAssets/results
 
     steps:
@@ -58,6 +63,11 @@ jobs:
           echo "❌ Test HDR image not found: $INPUT (make sure it is committed via Git LFS)."
           exit 1
         fi
+        # Output filename prefix derived from the input basename (no extension), so different
+        # inputs produce distinctly-named artifacts (e.g. test_in_desert_… vs test_in_…).
+        base=$(basename "$INPUT"); base=${base%.*}
+        echo "PREFIX=$base" >> "$GITHUB_ENV"
+        echo "ℹ️ Output prefix: $base"
 
     # Xcode 26 ships the Metal toolchain as a separate downloadable component; the build
     # compiles HistogramShaders.metal, so fetch it first (no-op if already installed).
@@ -102,7 +112,7 @@ jobs:
 
         run() {
           local res="$1" ch="$2"; shift 2
-          local out="$RESULTS_DIR/desert_${OS_LABEL}_${res}_${ch}_auto_q95.heic"
+          local out="$RESULTS_DIR/${PREFIX}_${OS_LABEL}_${res}_${ch}_auto_q95.heic"
           echo "::group::export ${res} ${ch} → $out"
           "$CLI" "$INPUT" "$out" --auto --verbose "$@"
           echo "::endgroup::"
@@ -116,13 +126,13 @@ jobs:
         run half rgb        --gainmap-subsample=2 --rgb
 
         echo "📦 Produced:"
-        ls -lh "$RESULTS_DIR"/desert_${OS_LABEL}_*.heic
+        ls -lh "$RESULTS_DIR"/${PREFIX}_${OS_LABEL}_*.heic
 
     - name: Verify exported images
       run: |
         set -uo pipefail
         fail=0
-        for f in "$RESULTS_DIR"/desert_${OS_LABEL}_*.heic; do
+        for f in "$RESULTS_DIR"/${PREFIX}_${OS_LABEL}_*.heic; do
           echo "::group::verify $f"
           if swift Scripts/verify_export.swift "$f"; then
             echo "✅ $f"
@@ -142,6 +152,6 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: test-outputs-${{ matrix.os_label }}
-        path: ${{ env.RESULTS_DIR }}/desert_${{ matrix.os_label }}_*.heic
+        name: test-outputs-${{ env.PREFIX }}-${{ matrix.os_label }}
+        path: ${{ env.RESULTS_DIR }}/${{ env.PREFIX }}_${{ matrix.os_label }}_*.heic
         retention-days: 7
