@@ -85,14 +85,16 @@ jobs:
         echo "✅ Found CLI at: $CLI_PATH"
         chmod +x "$CLI_PATH"
 
-    # Export the same input four ways — {full, half} gain-map resolution × {mono, RGB} gain map —
-    # always with Auto tone-mapping. HEIC quality is left unset so the engine uses its 0.95 default.
+    # Export the same input six ways — {full, half} gain-map resolution × three gain-map kinds:
+    #   monoCI     = luma gain map computed by Core Image (aux tagged PQ by Core Image)
+    #   monoManual = luma gain map we hand-assemble, aux tagged Display P3 by us (--mono-manual)
+    #   rgb        = 3-channel gain map we hand-assemble, aux Display P3 (--rgb)
+    # Always with Auto tone-mapping. HEIC quality is left unset so the engine uses its 0.95 default.
     #
-    # The CLI persists the gainMapRGB / gainMapSubsampleFactor preferences into UserDefaults, which
-    # survive between invocations on the same runner. So we (a) always pass --gainmap-subsample
-    # explicitly, and (b) run the two mono cases *before* the two RGB cases — once --rgb sets the flag
-    # it stays set, but we never need it back off, so no run is contaminated.
-    - name: Run export tests (4 combinations)
+    # The CLI writes the gainMapRGB / gainMapMonoManual keys explicitly on EVERY invocation (both the
+    # true and false case), so each run is deterministic regardless of residual UserDefaults state —
+    # order no longer matters for correctness. We still pass --gainmap-subsample explicitly each run.
+    - name: Run export tests (6 combinations)
       run: |
         set -euo pipefail
         CLI="${{ steps.cli_path.outputs.cli_path }}"
@@ -106,10 +108,12 @@ jobs:
           echo "::endgroup::"
         }
 
-        run full mono --gainmap-subsample=1
-        run half mono --gainmap-subsample=2
-        run full rgb  --gainmap-subsample=1 --rgb
-        run half rgb  --gainmap-subsample=2 --rgb
+        run full monoCI     --gainmap-subsample=1
+        run half monoCI     --gainmap-subsample=2
+        run full monoManual --gainmap-subsample=1 --mono-manual
+        run half monoManual --gainmap-subsample=2 --mono-manual
+        run full rgb        --gainmap-subsample=1 --rgb
+        run half rgb        --gainmap-subsample=2 --rgb
 
         echo "📦 Produced:"
         ls -lh "$RESULTS_DIR"/desert_${OS_LABEL}_*.heic

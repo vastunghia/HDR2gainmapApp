@@ -34,21 +34,29 @@ struct EnableWindowResize: NSViewRepresentable {
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            guard let window, !configured else { return }
+            guard window != nil, !configured else { return }
             configured = true
 
-            window.styleMask.insert(.resizable)
-            // Lock the width (min == max); leave the height free above `minHeight`.
-            window.contentMinSize = NSSize(width: width, height: minHeight)
-            window.contentMaxSize = NSSize(width: width, height: 100_000)
+            // Defer the window mutation: viewDidMoveToWindow fires mid-layout, and resizing the
+            // window synchronously here trips an AppKit layout-recursion warning
+            // ("-layoutSubtreeIfNeeded on a view which is already being laid out"). Running on the
+            // next runloop tick keeps it out of the active layout pass.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let window = self.window else { return }
 
-            // Open at the desired content size, overriding any restored/auto-saved frame, keeping the
-            // top-left corner anchored (macOS frames are bottom-left origin).
-            let topLeftY = window.frame.maxY
-            window.setContentSize(NSSize(width: width, height: initialHeight))
-            var frame = window.frame
-            frame.origin.y = topLeftY - frame.height
-            window.setFrame(frame, display: true)
+                window.styleMask.insert(.resizable)
+                // Lock the width (min == max); leave the height free above `minHeight`.
+                window.contentMinSize = NSSize(width: self.width, height: self.minHeight)
+                window.contentMaxSize = NSSize(width: self.width, height: 100_000)
+
+                // Open at the desired content size, overriding any restored/auto-saved frame, keeping
+                // the top-left corner anchored (macOS frames are bottom-left origin).
+                let topLeftY = window.frame.maxY
+                window.setContentSize(NSSize(width: self.width, height: self.initialHeight))
+                var frame = window.frame
+                frame.origin.y = topLeftY - frame.height
+                window.setFrame(frame, display: true)
+            }
         }
     }
 }

@@ -586,6 +586,15 @@ class HDRProcessor {
             return
         }
 
+        // Manual mono gain map (CLI-only, opt-in via `gainMapMonoManual`): same hand-assembly road
+        // as the RGB path, but a single luma channel and WITH the aux color space set by us
+        // (Display P3) — unlike the default mono path below, where Core Image computes the gain map
+        // and tags it PQ. Lets us compare "who builds the aux" as the only variable.
+        if UserDefaults.standard.bool(forKey: "gainMapMonoManual") {
+            try writeMonoManualGainMapHEIC(hdr: hdr, sdrBase: sdrBase, baseProps: props, to: outputURL)
+            return
+        }
+
         let sdr_with_props = sdrBase.settingProperties(props)
 
         // Read quality from UserDefaults (set in Preferences)
@@ -840,6 +849,122 @@ class HDRProcessor {
             argb[i + 3] = ch(hdrBuf[i + 2], sdrBuf[i + 2])
         }
         return (Data(argb), w, h, gmaxStops)
+    }
+
+    // MARK: - Manual mono gain map (CLI-only, opt-in via `gainMapMonoManual`)
+
+    /// Build a luma (monochrome) ISO 21496-1 gain map ourselves and assemble the HEIC by hand,
+    /// writing it to `url`. Same road as `writeRGBGainMapHEIC` — we render the gain, attach the aux
+    /// via `CGImageDestinationAddAuxiliaryDataInfo` — but a single luma channel, and crucially WITH
+    /// the aux color space set by us (Display P3) instead of letting Core Image pick it (the default
+    /// mono path's gain map ends up tagged PQ). CLI-only experiment to compare the three gain-map
+    /// kinds (mono-CoreImage / mono-manual / RGB). `sdrBase` is the same tone-mapped base the other
+    /// paths use — only the gain map differs.
+    private func writeMonoManualGainMapHEIC(hdr: CIImage, sdrBase: CIImage,
+                                            baseProps: [String: Any], to url: URL) throws {
+        let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
+        let quality = (heicQuality > 0) ? heicQuality : 0.95
+
+        let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
+        let subsampleFactor = storedFactor > 0 ? storedFactor : 1
+
+        guard let data = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: baseProps,
+                                                         subsampleFactor: subsampleFactor, quality: quality) else {
+            throw ProcessingError.gainMapGenerationFailed
+        }
+
+        // Non-atomic write to the granted `url` (same sandbox rationale as `writeRGBGainMapHEIC`).
+        do {
+            try data.write(to: url, options: [])
+        } catch {
+            throw ProcessingError.isoConversionFailed("[MONO-C] write to \(url.lastPathComponent): \(error)")
+        }
+    }
+
+    /// Encode the SDR base + a single-channel (luma) ISO 21496-1 gain map into an in-memory HEIC
+    /// `Data`. Mirrors `encodeRGBGainMapHEICData` but emits an `L008` (8-bit, 1-channel) aux and tags
+    /// it Display P3 (`p3_cs`) ourselves, with 1-channel `ChannelMetadata`.
+    nonisolated private func encodeMonoManualGainMapHEICData(hdr: CIImage, sdrBase: CIImage,
+                                                             baseProps: [String: Any],
+                                                             subsampleFactor: Int, quality: Double) -> Data? {
+        guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else { return nil }
+        guard let meta = isoGainMapMetadata(channels: 1, gainMapMaxStops: gm.gainMapMaxStops) else { return nil }
+        guard let baseCG = encode_ctx.createCGImage(sdrBase, from: sdrBase.extent,
+                                                    format: .RGB10, colorSpace: p3_cs) else { return nil }
+
+        let desc: [String: Any] = [
+            "PixelFormat": Int(kCVPixelFormatType_OneComponent8),   // 'L008' = 8-bit single-channel luma
+            "Width": gm.width, "Height": gm.height, "BytesPerRow": gm.width,
+        ]
+        let aux: [CFString: Any] = [
+            kCGImageAuxiliaryDataInfoData: gm.data,
+            kCGImageAuxiliaryDataInfoDataDescription: desc,
+            kCGImageAuxiliaryDataInfoMetadata: meta,
+            kCGImageAuxiliaryDataInfoColorSpace: p3_cs,             // ← our choice: Display P3
+        ]
+
+        var imgProps = baseProps
+        imgProps[kCGImageDestinationLossyCompressionQuality as String] = quality
+
+        let buffer = NSMutableData()
+        guard let dst = CGImageDestinationCreateWithData(buffer as CFMutableData, "public.heic" as CFString, 1, nil) else {
+            return nil
+        }
+        CGImageDestinationAddImage(dst, baseCG, imgProps as CFDictionary)
+        CGImageDestinationAddAuxiliaryDataInfo(dst, kCGImageAuxiliaryDataTypeISOGainMap, aux as CFDictionary)
+        guard CGImageDestinationFinalize(dst) else { return nil }
+        return buffer as Data
+    }
+
+    /// Compute a luma (monochrome) gain map from the HDR source and tone-mapped SDR base at
+    /// `1/factor` resolution. Returns the `L008` payload (1 byte/px), its dimensions, and the gain
+    /// map max in stops. Luma uses Display-P3/D65 weights; per-pixel ratio mirrors `computeRGBGainMap`:
+    /// `clamp(log2((Yhdr+k)/(min(Ysdr,1)+k)) / log2(peak), 0, 1)` with `k = 1e-5`.
+    nonisolated private func computeMonoGainMap(hdr: CIImage, sdr: CIImage, factor: Int)
+        -> (data: Data, width: Int, height: Int, gainMapMaxStops: Float)? {
+        let f = max(1, factor)
+        let baseExtent = sdr.extent
+        // Even dimensions (same rationale as computeRGBGainMap: ImageIO chroma alignment).
+        let rawW = max(2, Int(baseExtent.width.rounded()) / f)
+        let rawH = max(2, Int(baseExtent.height.rounded()) / f)
+        let w = rawW - (rawW % 2)
+        let h = rawH - (rawH % 2)
+
+        let scaleX = CGFloat(w) / baseExtent.width
+        let scaleY = CGFloat(h) / baseExtent.height
+        let hdrS = hdr.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        let sdrS = sdr.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+
+        var hdrBuf = [Float](repeating: 0, count: w * h * 4)
+        var sdrBuf = [Float](repeating: 0, count: w * h * 4)
+        let rect = CGRect(x: 0, y: 0, width: w, height: h)
+        encode_ctx.render(hdrS, toBitmap: &hdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
+        encode_ctx.render(sdrS, toBitmap: &sdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
+
+        // Display-P3 / D65 luminance weights.
+        let wr: Float = 0.2290, wg: Float = 0.6917, wb: Float = 0.0793
+        func luma(_ b: [Float], _ i: Int) -> Float {
+            return max(0, wr * b[i] + wg * b[i + 1] + wb * b[i + 2])
+        }
+
+        var picHeadroom: Float = 1.0
+        for p in 0..<(w * h) {
+            picHeadroom = max(picHeadroom, luma(hdrBuf, p * 4))
+        }
+        let gmaxStops = log2(picHeadroom)
+        guard gmaxStops > 0, gmaxStops.isFinite else { return nil }
+
+        let k: Float = 0.00001
+        var gray = [UInt8](repeating: 0, count: w * h)
+        for p in 0..<(w * h) {
+            let i = p * 4
+            let hv = luma(hdrBuf, i)
+            let s = min(max(luma(sdrBuf, i), 0), 1)
+            var r = log2((hv + k) / (s + k)) / gmaxStops
+            if !r.isFinite { r = 0 }
+            gray[p] = UInt8((min(max(r, 0), 1) * 255).rounded())
+        }
+        return (Data(gray), w, h, gmaxStops)
     }
 
     /// Build the ISO 21496-1 HDRToneMap gain map metadata (XMP → CGImageMetadata) with `channels`
