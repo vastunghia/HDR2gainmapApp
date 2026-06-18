@@ -586,15 +586,16 @@ class HDRProcessor {
             return
         }
 
-        // Manual mono gain map (CLI-only, opt-in via `gainMapMonoManual`): same hand-assembly road
-        // as the RGB path, but a single luma channel and WITH the aux color space set by us
-        // (Display P3) — unlike the default mono path below, where Core Image computes the gain map
-        // and tags it PQ. Lets us compare "who builds the aux" as the only variable.
-        if UserDefaults.standard.bool(forKey: "gainMapMonoManual") {
+        // Default mono path: a luma gain map we hand-assemble ourselves, with the aux color space set
+        // by us to Display P3 (see `writeMonoManualGainMapHEIC`). The Core Image mono path below —
+        // which lets Core Image compute the gain map and tag it PQ — is now an opt-in LEGACY route,
+        // selected only via the CLI flag `--mono-coreimage` (UserDefaults `gainMapMonoCoreImage`).
+        if !UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
             try writeMonoManualGainMapHEIC(hdr: hdr, sdrBase: sdrBase, baseProps: props, to: outputURL)
             return
         }
 
+        // --- Legacy Core Image mono path (opt-in via `gainMapMonoCoreImage`) ---
         let sdr_with_props = sdrBase.settingProperties(props)
 
         // Read quality from UserDefaults (set in Preferences)
@@ -851,15 +852,15 @@ class HDRProcessor {
         return (Data(argb), w, h, gmaxStops)
     }
 
-    // MARK: - Manual mono gain map (CLI-only, opt-in via `gainMapMonoManual`)
+    // MARK: - Manual mono gain map (DEFAULT mono path; Display P3)
 
     /// Build a luma (monochrome) ISO 21496-1 gain map ourselves and assemble the HEIC by hand,
     /// writing it to `url`. Same road as `writeRGBGainMapHEIC` — we render the gain, attach the aux
     /// via `CGImageDestinationAddAuxiliaryDataInfo` — but a single luma channel, and crucially WITH
-    /// the aux color space set by us (Display P3) instead of letting Core Image pick it (the default
-    /// mono path's gain map ends up tagged PQ). CLI-only experiment to compare the three gain-map
-    /// kinds (mono-CoreImage / mono-manual / RGB). `sdrBase` is the same tone-mapped base the other
-    /// paths use — only the gain map differs.
+    /// the aux color space set by us (Display P3) instead of letting Core Image pick it (the legacy
+    /// Core Image mono path ends up tagged PQ). This is now the DEFAULT for monochrome gain maps in
+    /// both the GUI and the CLI; the Core Image path is opt-in via `--mono-coreimage`. `sdrBase` is
+    /// the same tone-mapped base the other paths use — only the gain map differs.
     private func writeMonoManualGainMapHEIC(hdr: CIImage, sdrBase: CIImage,
                                             baseProps: [String: Any], to url: URL) throws {
         let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
@@ -1993,17 +1994,18 @@ class HDRProcessor {
     /// decode back with `.expandToHDR`. Used by the `.finalOutput` preview to validate fidelity.
     nonisolated private func reconstructHDRFromGainMap(sdrBase: CIImage, hdr: CIImage) throws -> CIImage {
         let data: Data
+        let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
+        let subsampleFactor = storedFactor > 0 ? storedFactor : 1
         if UserDefaults.standard.bool(forKey: "gainMapRGB") {
             // RGB: round-trip through the exact same HEIC bytes the RGB exporter writes, so the
             // preview matches the file. Subsample to match the export; quality 1.0 for a fidelity view.
-            let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
-            let subsampleFactor = storedFactor > 0 ? storedFactor : 1
             guard let d = encodeRGBGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: [:],
                                                    subsampleFactor: subsampleFactor, quality: 1.0) else {
                 throw ProcessingError.gainMapGenerationFailed
             }
             data = d
-        } else {
+        } else if UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
+            // Legacy Core Image mono (PQ) — opt-in only.
             let options: [CIImageRepresentationOption: Any] = [
                 kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
                 CIImageRepresentationOption.hdrImage: hdr,
@@ -2016,6 +2018,13 @@ class HDRProcessor {
                 throw ProcessingError.gainMapGenerationFailed
             }
             data = d
+        } else {
+            // Default: hand-assembled luma gain map (Display P3) — same bytes the exporter writes.
+            guard let d = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: [:],
+                                                          subsampleFactor: subsampleFactor, quality: 1.0) else {
+                throw ProcessingError.gainMapGenerationFailed
+            }
+            data = d
         }
         guard let reconstructed = CIImage(data: data, options: [.expandToHDR: true]) else {
             throw ProcessingError.gainMapExtractionFailed
@@ -2023,10 +2032,10 @@ class HDRProcessor {
         return reconstructed
     }
 
-    /// Extracts the gain map as a standalone CIImage for the `.gainMap` preview. With the `gainMapRGB`
-    /// pref off, it pulls Core Image's luma auxiliary; with it on, it visualizes the 3-channel RGB
-    /// gain map we compute ourselves (Core Image doesn't expose an RGB gain map as an extractable
-    /// auxiliary). Rendered at full resolution (factor 1) for clearer inspection.
+    /// Extracts the gain map as a standalone CIImage for the `.gainMap` preview. RGB on → visualizes
+    /// the 3-channel gain map we compute; mono (default) → visualizes the hand-assembled luma gain map
+    /// as grayscale; the legacy Core Image mono path (opt-in) pulls Core Image's luma auxiliary.
+    /// Rendered at full resolution (factor 1) for clearer inspection.
     nonisolated private func extractGainMapImage(sdrBase: CIImage, hdr: CIImage) throws -> CIImage {
         if UserDefaults.standard.bool(forKey: "gainMapRGB") {
             guard let gm = computeRGBGainMap(hdr: hdr, sdr: sdrBase, factor: 1) else {
@@ -2038,6 +2047,27 @@ class HDRProcessor {
                            format: .ARGB8,
                            colorSpace: p3_cs)
         }
+        if !UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
+            // Default: visualize our hand-assembled luma gain map. Expand the L008 bytes into ARGB8
+            // gray (R=G=B=gain, A=255) so we can build the CIImage with the same .ARGB8 path as RGB.
+            guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: 1) else {
+                throw ProcessingError.gainMapGenerationFailed
+            }
+            var argb = [UInt8](repeating: 0, count: gm.width * gm.height * 4)
+            gm.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                let lum = raw.bindMemory(to: UInt8.self)
+                for p in 0..<(gm.width * gm.height) {
+                    let v = lum[p], i = p * 4
+                    argb[i] = 255; argb[i + 1] = v; argb[i + 2] = v; argb[i + 3] = v
+                }
+            }
+            return CIImage(bitmapData: Data(argb),
+                           bytesPerRow: gm.width * 4,
+                           size: CGSize(width: gm.width, height: gm.height),
+                           format: .ARGB8,
+                           colorSpace: p3_cs)
+        }
+        // Legacy Core Image mono (PQ) — opt-in only.
         let options: [CIImageRepresentationOption: Any] = [
             kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
             CIImageRepresentationOption.hdrImage: hdr,

@@ -96,8 +96,8 @@ jobs:
         chmod +x "$CLI_PATH"
 
     # Export the same input six ways — {full, half} gain-map resolution × three gain-map kinds:
-    #   monoCI     = luma gain map computed by Core Image (aux tagged PQ by Core Image)
-    #   monoManual = luma gain map we hand-assemble, aux tagged Display P3 by us (--mono-manual)
+    #   monoManual = luma gain map we hand-assemble, aux tagged Display P3 by us (now the DEFAULT)
+    #   monoCI     = legacy luma gain map computed by Core Image, aux tagged PQ (--mono-coreimage)
     #   rgb        = 3-channel gain map we hand-assemble, aux Display P3 (--rgb)
     # Always with Auto tone-mapping. HEIC quality is left unset so the engine uses its 0.95 default.
     #
@@ -118,10 +118,10 @@ jobs:
           echo "::endgroup::"
         }
 
-        run full monoCI     --gainmap-subsample=1
-        run half monoCI     --gainmap-subsample=2
-        run full monoManual --gainmap-subsample=1 --mono-manual
-        run half monoManual --gainmap-subsample=2 --mono-manual
+        run full monoManual --gainmap-subsample=1
+        run half monoManual --gainmap-subsample=2
+        run full monoCI     --gainmap-subsample=1 --mono-coreimage
+        run half monoCI     --gainmap-subsample=2 --mono-coreimage
         run full rgb        --gainmap-subsample=1 --rgb
         run half rgb        --gainmap-subsample=2 --rgb
 

@@ -13,7 +13,8 @@ struct CLIArguments {
     let auto: Bool
     let autoTolerancePercent: Double?
     let rgb: Bool           // emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma
-    let monoManual: Bool    // emit a luma gain map we hand-assemble (Display P3), bypassing Core Image
+    let monoCoreImage: Bool // use the legacy Core Image mono gain map (PQ) instead of the default
+                            // hand-assembled luma map (Display P3)
     let skipPreview: Bool   // experimental: skip generatePreview so the auto search runs cold (perf bench)
     let searchOnly: Bool    // experimental: run the auto search then exit before export (perf bench)
 
@@ -27,7 +28,7 @@ struct CLIArguments {
         var auto = false
         var autoTolerancePercent: Double? = nil
         var rgb = false
-        var monoManual = false
+        var monoCoreImage = false
         var skipPreview = false
         var searchOnly = false
         var positionalArgs: [String] = []
@@ -47,8 +48,8 @@ struct CLIArguments {
                 auto = true
             } else if arg == "--rgb" {
                 rgb = true
-            } else if arg == "--mono-manual" {
-                monoManual = true
+            } else if arg == "--mono-coreimage" {
+                monoCoreImage = true
             } else if arg == "--skip-preview" {
                 skipPreview = true
             } else if arg == "--search-only" {
@@ -71,9 +72,9 @@ struct CLIArguments {
             return nil
         }
 
-        // --rgb and --mono-manual select mutually exclusive gain-map assembly paths.
-        if rgb && monoManual {
-            print("❌ --rgb and --mono-manual are mutually exclusive (pick one gain-map kind)")
+        // --rgb and --mono-coreimage select mutually exclusive gain-map kinds.
+        if rgb && monoCoreImage {
+            print("❌ --rgb and --mono-coreimage are mutually exclusive (pick one gain-map kind)")
             return nil
         }
 
@@ -86,7 +87,7 @@ struct CLIArguments {
             auto: auto,
             autoTolerancePercent: autoTolerancePercent,
             rgb: rgb,
-            monoManual: monoManual,
+            monoCoreImage: monoCoreImage,
             skipPreview: skipPreview,
             searchOnly: searchOnly
         )
@@ -108,9 +109,8 @@ struct CLIArguments {
                            pixels clipped in any single SDR channel within the tolerance
           --auto-tolerance=PCT   Per-channel clip tolerance for --auto, percent of pixels (default 1.0)
           --rgb            Emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma (monochrome)
-          --mono-manual    Emit a luma (monochrome) gain map we hand-assemble in Display P3, instead
-                           of the default mono path where Core Image computes it (and tags it PQ).
-                           Mutually exclusive with --rgb.
+          --mono-coreimage Use the legacy Core Image mono gain map (tagged PQ) instead of the default
+                           hand-assembled luma map (Display P3). Mutually exclusive with --rgb.
 
         Example:
           HDR2gainmapCLI input.png output.heic --verify
@@ -214,12 +214,12 @@ func main() async {
     // from the GUI app's domain — so each invocation is deterministic regardless of residual state
     // left by a prior invocation on the same machine/runner. (The engine checks gainMapRGB first.)
     UserDefaults.standard.set(args.rgb, forKey: "gainMapRGB")
-    UserDefaults.standard.set(args.monoManual, forKey: "gainMapMonoManual")
+    UserDefaults.standard.set(args.monoCoreImage, forKey: "gainMapMonoCoreImage")
     let processor = HDRProcessor.shared
 
     if args.verbose {
         let kind = args.rgb ? "RGB (3-channel)"
-            : (args.monoManual ? "luma (manual, Display P3)" : "luma (Core Image)")
+            : (args.monoCoreImage ? "luma (Core Image, PQ)" : "luma (manual, Display P3)")
         print("   Gain map: \(kind)")
         let subsample = args.gainMapSubsample ?? 1
         print("   Gain map resolution: \(subsample <= 1 ? "full (1×)" : "1/\(subsample)×")")
