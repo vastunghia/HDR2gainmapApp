@@ -317,7 +317,7 @@ class MainViewModel {
             // thumbnail work below — so the alert appears promptly instead of seconds later.
             if !missing.isEmpty {
                 let list = missing.joined(separator: "\n• ")
-                self.errorMessage = "Imported settings, but these images from the profile were not found in the folder:\n\n• \(list)"
+                self.errorMessage = "Opened the tone-mapping parameters profile, but these images from it were not found in the folder:\n\n• \(list)"
                 self.showError = true
                 await Task.yield()  // let SwiftUI present the alert before the heavy work starts
             }
@@ -692,11 +692,11 @@ class MainViewModel {
         }
     }
 
-    /// Re-renders the gain-map–dependent previews after the mono ↔ RGB gain map preference changes
-    /// (toggled in Settings). Shows the loading spinner and covers both the single view and Compare
-    /// (both halves). The preview cache key folds the pref in, so these renders produce the right
-    /// (mono/RGB) variant.
-    func refreshAfterGainMapKindChange() {
+    /// Re-renders the gain-map–dependent previews after a gain-map preference changes in Settings —
+    /// either the mono ↔ RGB kind or the gain-map resolution (1× ↔ ½×). Shows the loading spinner and
+    /// covers both the single view and Compare (both halves). The preview cache key folds both prefs
+    /// in, so these renders produce the right variant.
+    func refreshAfterGainMapSettingChange() {
         guard let image = self.selectedImage else { return }
         Task {
             self.isLoadingPreview = true
@@ -929,9 +929,9 @@ class MainViewModel {
         )
 
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(folderName)-settings.json"
+        panel.nameFieldStringValue = "\(folderName)-tonemap-parameters.json"
         panel.allowedContentTypes = [UTType.json]
-        panel.message = "Choose where to save the tone-mapping settings profile"
+        panel.message = "Choose where to save the tone-mapping parameters profile"
 
         panel.begin { [weak self] response in
             guard let self else { completion?(false); return }
@@ -946,7 +946,7 @@ class MainViewModel {
                 self.settingsExported = true
                 completion?(true)
             } catch {
-                self.errorMessage = "Failed to save settings profile: \(error.localizedDescription)"
+                self.errorMessage = "Failed to save tone-mapping parameters profile: \(error.localizedDescription)"
                 self.showError = true
                 completion?(false)
             }
@@ -962,7 +962,7 @@ class MainViewModel {
         filePanel.canChooseDirectories = false
         filePanel.allowsMultipleSelection = false
         filePanel.allowedContentTypes = [UTType.json]
-        filePanel.message = "Choose a tone-mapping settings profile to import"
+        filePanel.message = "Choose a tone-mapping parameters profile to open"
 
         filePanel.begin { [weak self] response in
             guard let self else { return }
@@ -975,13 +975,13 @@ class MainViewModel {
                 decoder.dateDecodingStrategy = .iso8601
                 profile = try decoder.decode(SettingsProfile.self, from: data)
             } catch {
-                self.errorMessage = "Failed to read settings profile: \(error.localizedDescription)"
+                self.errorMessage = "Failed to read tone-mapping parameters profile: \(error.localizedDescription)"
                 self.showError = true
                 return
             }
 
             guard profile.schemaVersion <= SettingsProfile.currentSchemaVersion else {
-                self.errorMessage = "This settings profile was created by a newer version of the app and can't be read. Please update the app."
+                self.errorMessage = "This tone-mapping parameters profile was created by a newer version of the app and can't be read. Please update the app."
                 self.showError = true
                 return
             }

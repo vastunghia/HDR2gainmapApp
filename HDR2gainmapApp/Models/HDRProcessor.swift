@@ -139,11 +139,14 @@ class HDRProcessor {
 
     nonisolated private func previewKey(_ p: PreviewParams) -> NSString {
         var k = p.url.absoluteString + "|mode=" + p.mode.rawValue + "|" + previewSettingsFingerprint(p)
-        // The gain-map–dependent views differ between the mono and RGB gain maps, so fold the global
-        // `gainMapRGB` pref into their key: toggling it yields a distinct cache entry (the stale one
-        // is never returned and gets evicted). The SDR/HDR-input views don't depend on it.
+        // The gain-map–dependent views differ between the mono and RGB gain maps, and the gain map is
+        // (optionally) subsampled by `gainMapSubsampleFactor` — which changes both the gain-map view
+        // and the reconstructed final-output view. Fold both global prefs into their key so toggling
+        // either in Preferences yields a distinct cache entry (the stale one is never returned and
+        // gets evicted). The SDR/HDR-input views don't depend on either.
         if p.mode == .gainMap || p.mode == .finalOutput {
             k += "|rgb=\(UserDefaults.standard.bool(forKey: "gainMapRGB"))"
+            k += "|gmsub=\(UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor"))"
         }
         return NSString(string: k)
     }
@@ -1506,7 +1509,7 @@ class HDRProcessor {
             _ = await prewarmPercentileCDF(url: url)
             guard let box = Self.percentileCDFCache.object(forKey: url as NSURL) else {
                 return AutoApplyOutcome(requestedHeadroom: sourceHeadroom, realizedHeadroom: sourceHeadroom,
-                                        note: "Percentile lookup unavailable; settings unchanged")
+                                        note: "Percentile lookup unavailable; parameters unchanged")
             }
             let (percentile, realized) = Self.percentileForHeadroom(box, sourceHeadroom: sourceHeadroom)
             settings.percentile = percentile
@@ -2035,22 +2038,35 @@ class HDRProcessor {
     /// Extracts the gain map as a standalone CIImage for the `.gainMap` preview. RGB on → visualizes
     /// the 3-channel gain map we compute; mono (default) → visualizes the hand-assembled luma gain map
     /// as grayscale; the legacy Core Image mono path (opt-in) pulls Core Image's luma auxiliary.
-    /// Rendered at full resolution (factor 1) for clearer inspection.
+    /// The gain map is computed at the export resolution (`gainMapSubsampleFactor`) and then scaled
+    /// back up to the SDR base extent — mirroring how the decoder upscales the stored map during
+    /// reconstruction — so the preview reflects the 1× / ½× setting (½× looks softer) while keeping
+    /// the same pixel geometry as the other previews (zoom / Compare line up).
     nonisolated private func extractGainMapImage(sdrBase: CIImage, hdr: CIImage) throws -> CIImage {
+        let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
+        let subsampleFactor = storedFactor > 0 ? storedFactor : 1
+        // Scale a gain map (built at 1/subsampleFactor) back up to the SDR base extent.
+        func upscaledToBase(_ image: CIImage, gmWidth: Int, gmHeight: Int) -> CIImage {
+            let baseExtent = sdrBase.extent
+            let sx = baseExtent.width / CGFloat(gmWidth)
+            let sy = baseExtent.height / CGFloat(gmHeight)
+            return image.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+        }
         if UserDefaults.standard.bool(forKey: "gainMapRGB") {
-            guard let gm = computeRGBGainMap(hdr: hdr, sdr: sdrBase, factor: 1) else {
+            guard let gm = computeRGBGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else {
                 throw ProcessingError.gainMapGenerationFailed
             }
-            return CIImage(bitmapData: gm.data,
-                           bytesPerRow: gm.width * 4,
-                           size: CGSize(width: gm.width, height: gm.height),
-                           format: .ARGB8,
-                           colorSpace: p3_cs)
+            let img = CIImage(bitmapData: gm.data,
+                              bytesPerRow: gm.width * 4,
+                              size: CGSize(width: gm.width, height: gm.height),
+                              format: .ARGB8,
+                              colorSpace: p3_cs)
+            return upscaledToBase(img, gmWidth: gm.width, gmHeight: gm.height)
         }
         if !UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
             // Default: visualize our hand-assembled luma gain map. Expand the L008 bytes into ARGB8
             // gray (R=G=B=gain, A=255) so we can build the CIImage with the same .ARGB8 path as RGB.
-            guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: 1) else {
+            guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else {
                 throw ProcessingError.gainMapGenerationFailed
             }
             var argb = [UInt8](repeating: 0, count: gm.width * gm.height * 4)
@@ -2061,11 +2077,12 @@ class HDRProcessor {
                     argb[i] = 255; argb[i + 1] = v; argb[i + 2] = v; argb[i + 3] = v
                 }
             }
-            return CIImage(bitmapData: Data(argb),
-                           bytesPerRow: gm.width * 4,
-                           size: CGSize(width: gm.width, height: gm.height),
-                           format: .ARGB8,
-                           colorSpace: p3_cs)
+            let img = CIImage(bitmapData: Data(argb),
+                              bytesPerRow: gm.width * 4,
+                              size: CGSize(width: gm.width, height: gm.height),
+                              format: .ARGB8,
+                              colorSpace: p3_cs)
+            return upscaledToBase(img, gmWidth: gm.width, gmHeight: gm.height)
         }
         // Legacy Core Image mono (PQ) — opt-in only.
         let options: [CIImageRepresentationOption: Any] = [

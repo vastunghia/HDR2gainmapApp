@@ -110,7 +110,7 @@ struct ThumbnailCell: View {
                         .help("Marked as ready for export (press M to toggle)")
                 }
             }
-            // "Settings modified" badge: tone-mapping differs from the defaults.
+            // "Tone-mapping parameters modified" badge: tone-mapping differs from the defaults.
             .overlay(alignment: .bottomLeading) {
                 if image.settings.isModifiedFromDefaults {
                     Image(systemName: "slider.horizontal.3")
@@ -121,7 +121,7 @@ struct ThumbnailCell: View {
                         .overlay(Circle().strokeBorder(.black.opacity(0.25), lineWidth: 0.5))
                         .padding(4)
                         .transition(.opacity)
-                        .help("Settings changed from defaults")
+                        .help("Tone-mapping parameters changed from defaults")
                 }
             }
             .animation(.easeInOut(duration: 0.2), value: isCached)

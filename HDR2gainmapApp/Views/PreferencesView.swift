@@ -16,7 +16,7 @@ struct PreferencesView: View {
     /// The gain map is computed per-channel and assembled by hand (Core Image only produces luma
     /// on macOS 15).
     @AppStorage("gainMapRGB")
-    private var gainMapRGB: Bool = false
+    private var gainMapRGB: Bool = true
 
     /// Pixel-peeping zoom level (percent of actual pixels): 100 = 1 image px : 1 point.
     @AppStorage("pixelPeepZoomLevel")
@@ -37,7 +37,7 @@ struct PreferencesView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Preferences")
+                Text("Settings")
                     .font(.title2.weight(.bold))
 
             GroupBox {
@@ -49,16 +49,17 @@ struct PreferencesView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
                             Text("HEIC Quality")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .settingLabel()
                             Spacer()
                             Text(String(format: "%.2f", heicExportQuality))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .settingLabel()
                                 .monospacedDigit()
                         }
 
-                        Slider(value: $heicExportQuality, in: 0.5...1.0, step: 0.01)
+                        // Continuous (no `step`) so the track stays clean — a stepped slider draws
+                        // dense tick marks that make the gray native track read as faint/disabled.
+                        Slider(value: $heicExportQuality, in: 0.5...1.0)
+                            .controlSize(.large)
 
                         HStack {
                             Text("Lower")
@@ -70,6 +71,7 @@ struct PreferencesView: View {
                                 .foregroundStyle(.tertiary)
                         }
                     }
+                    .settingCard()
 
                     Text("""
                          Controls the HEIF compression quality. \
@@ -82,11 +84,14 @@ struct PreferencesView: View {
 
                     // Gain map resolution
                     VStack(alignment: .leading, spacing: 8) {
+                        Text("Gain Map Resolution")
+                            .settingLabel()
                         Picker("Gain Map Resolution", selection: $gainMapSubsampleFactor) {
                             Text("Half (½×)").tag(2)
                             Text("Full (1×)").tag(1)
                         }
                         .pickerStyle(.segmented)
+                        .labelsHidden()
                         .fixedSize()
                     }
 
@@ -98,21 +103,24 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                    if gainMapSubsampleFactor != 1 {
-                        Label("""
-                              At half resolution, fine detail in the bright highlights of the \
-                              reconstructed HDR (SDR + gain map) can be lost. Use Full if you \
-                              want to preserve it.
-                              """, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    }
+                    // Kept in the layout (just transparent) when not applicable, so toggling the
+                    // warning doesn't shift the rest of the window up or down.
+                    Label("""
+                          At half resolution, fine detail in the bright highlights of the \
+                          reconstructed HDR (SDR + gain map) can be lost. Use Full if you \
+                          want to preserve it.
+                          """, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .opacity(gainMapSubsampleFactor != 1 ? 1 : 0)
+                        .accessibilityHidden(gainMapSubsampleFactor == 1)
 
                     Divider()
 
                     // RGB gain map
                     VStack(alignment: .leading, spacing: 8) {
                         Toggle("Export RGB gain map", isOn: $gainMapRGB)
+                            .settingLabel()
                     }
 
                     Text("""
@@ -123,26 +131,37 @@ struct PreferencesView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                    if !gainMapRGB {
-                        Label("""
-                              A monochrome gain map scales all channels equally, so colors in the \
-                              bright highlights of the reconstructed HDR can drift. An RGB gain map \
-                              reconstructs each channel separately, keeping highlight colors truer.
-                              """, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.orange)
-                    }
+                    // Kept in the layout (just transparent) when not applicable, so toggling the
+                    // warning doesn't shift the rest of the window up or down.
+                    Label("""
+                          A monochrome gain map scales all channels equally, so colors in the \
+                          bright highlights of the reconstructed HDR can drift. An RGB gain map \
+                          reconstructs each channel separately, keeping highlight colors truer.
+                          """, systemImage: "exclamationmark.triangle.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                        .opacity(!gainMapRGB ? 1 : 0)
+                        .accessibilityHidden(gainMapRGB)
+                }
+                .padding(14)
+            }
 
-                    Divider()
+            GroupBox {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("General Settings")
+                        .font(.headline)
 
                     // Pixel-peeping zoom level
                     VStack(alignment: .leading, spacing: 8) {
+                        Text("Zoom Level")
+                            .settingLabel()
                         Picker("Zoom Level", selection: $pixelPeepZoomLevel) {
                             Text("100%").tag(100)
                             Text("200%").tag(200)
                             Text("400%").tag(400)
                         }
                         .pickerStyle(.segmented)
+                        .labelsHidden()
                         .fixedSize()
                     }
 
@@ -159,16 +178,15 @@ struct PreferencesView: View {
                     // Auto tone-mapping clip tolerance
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Auto Settings")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                            Text("Auto Tone-Mapping")
+                                .settingLabel()
                             Spacer()
                             Text(String(format: "%g%%", autoClipTolerancePercent))
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .settingLabel()
                                 .monospacedDigit()
                         }
 
+                        // `step: 1` keeps the slider snapping to the five discrete tolerance stops.
                         Slider(
                             value: Binding(
                                 get: { Double(autoClipValues.firstIndex(of: autoClipTolerancePercent) ?? 2) },
@@ -177,17 +195,21 @@ struct PreferencesView: View {
                             in: 0...Double(autoClipValues.count - 1),
                             step: 1
                         )
+                        .controlSize(.large)
 
-                        HStack {
-                            Text("Darker SDR / More detailed HDR")
+                        HStack(alignment: .top) {
+                            Text("Darker, less clipped, blown SDR /\nMore detailed HDR")
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.leading)
                             Spacer()
-                            Text("Brighter SDR / Less detailed HDR")
+                            Text("Brighter, more clipped, blown SDR /\nLess detailed HDR")
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
+                                .multilineTextAlignment(.trailing)
                         }
                     }
+                    .settingCard()
 
                     Text("""
                          When using Auto tone mapping, the source headroom is lowered (brightening \
@@ -196,21 +218,16 @@ struct PreferencesView: View {
                          """)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                    Text("""
+                         If you go for a clipped SDR, you may find that a way to reconstruct detail \
+                         in the highlights more accurately is to export RGB (and possibly \
+                         full-resolution) gain maps — see the two settings above.
+                         """)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
                 .padding(14)
-
-                HStack {
-                    Spacer()
-                    Button("Reset defaults") {
-                        heicExportQuality = 0.95
-                        gainMapSubsampleFactor = 1
-                        gainMapRGB = false
-                        pixelPeepZoomLevel = 200
-                        autoClipTolerancePercent = 1.0
-                        automaticUpdateCheck = true
-                    }
-                    .buttonStyle(.bordered)
-                }
             }
 
             GroupBox {
@@ -219,6 +236,7 @@ struct PreferencesView: View {
                         .font(.headline)
 
                     Toggle("Check for updates automatically", isOn: $automaticUpdateCheck)
+                        .settingLabel()
 
                     Text("""
                          When enabled, the app checks GitHub for a newer release at launch \
@@ -238,14 +256,46 @@ struct PreferencesView: View {
                 }
             }
 
+            // A single global reset for every preference, regardless of section.
+            HStack {
+                Spacer()
+                Button("Reset defaults") {
+                    heicExportQuality = 0.95
+                    gainMapSubsampleFactor = 1
+                    gainMapRGB = true
+                    pixelPeepZoomLevel = 200
+                    autoClipTolerancePercent = 1.0
+                    automaticUpdateCheck = true
+                }
+                .buttonStyle(.bordered)
+            }
+
             }
             .padding(24)
         }
         // Fixed-width content; the window itself is sized/locked by `enableWindowResize` (width 660,
-        // opens at 900, vertically resizable down to 400) together with the scene's
+        // opens at 1120, vertically resizable down to 400) together with the scene's
         // `.windowResizability(.contentMinSize)`. The ScrollView absorbs overflow when shrunk.
         .frame(width: 660)
-        .enableWindowResize(width: 660, minHeight: 400, initialHeight: 920)
+        .enableWindowResize(width: 660, minHeight: 400, initialHeight: 1120)
         .closeOnEscape()
+    }
+}
+
+private extension View {
+    /// Uniform styling for a control's title label across all Preferences sections (HEIC Quality,
+    /// Gain Map Resolution, Export RGB gain map, Zoom Level, Auto Tone-Mapping, Check for updates…), so
+    /// sliders, segmented pickers and toggles all read consistently.
+    func settingLabel() -> some View {
+        font(.subheadline).foregroundStyle(.secondary)
+    }
+
+    /// A subtle inset "card" around a slider control cluster (title + slider + end captions). macOS
+    /// native sliders are thin gray tracks with no colored fill, so they can read as faint/disabled;
+    /// this faint filled rounded background makes the control area stand out from the GroupBox.
+    func settingCard() -> some View {
+        padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.05)))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.10)))
     }
 }
