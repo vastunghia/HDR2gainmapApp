@@ -317,7 +317,7 @@ class MainViewModel {
             // thumbnail work below — so the alert appears promptly instead of seconds later.
             if !missing.isEmpty {
                 let list = missing.joined(separator: "\n• ")
-                self.errorMessage = "Imported settings, but these images from the profile were not found in the folder:\n\n• \(list)"
+                self.errorMessage = "Opened the tone-mapping parameters profile, but these images from it were not found in the folder:\n\n• \(list)"
                 self.showError = true
                 await Task.yield()  // let SwiftUI present the alert before the heavy work starts
             }
@@ -692,6 +692,38 @@ class MainViewModel {
         }
     }
 
+    /// Re-renders the gain-map–dependent previews after a gain-map preference changes in Settings —
+    /// either the mono ↔ RGB kind or the gain-map resolution (1× ↔ ½×). Shows the loading spinner and
+    /// covers both the single view and Compare (both halves). The preview cache key folds both prefs
+    /// in, so these renders produce the right variant.
+    func refreshAfterGainMapSettingChange() {
+        guard let image = self.selectedImage else { return }
+        Task {
+            self.isLoadingPreview = true
+            defer { self.isLoadingPreview = false }
+
+            if self.isComparison {
+                await self.refreshComparison(for: image)
+            } else {
+                let mode = self.previewMode
+                if let preview = try? await processor.generatePreview(for: image, mode: mode, reportClipping: { [weak self] clipped, total, detailedStats in
+                    Task { @MainActor in
+                        if total > 0 {
+                            self?.clippingStats = ClippingStats(clipped: clipped, total: total)
+                            self?.detailedClippingStats = detailedStats
+                        } else {
+                            self?.clippingStats = nil
+                            self?.detailedClippingStats = nil
+                        }
+                    }
+                }) {
+                    self.currentPreview = preview
+                    self.currentPreviewCIImage = processor.displayPreviewCIImage(for: image, mode: mode)
+                }
+            }
+        }
+    }
+
     /// Regenerates the preview when the user switches the view mode (segmented picker).
     /// Histograms are not refreshed here: switching the view doesn't change the tone-mapping
     /// parameters, so the current histograms already match the SDR output.
@@ -897,9 +929,9 @@ class MainViewModel {
         )
 
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(folderName)-settings.json"
+        panel.nameFieldStringValue = "\(folderName)-tonemap-parameters.json"
         panel.allowedContentTypes = [UTType.json]
-        panel.message = "Choose where to save the tone-mapping settings profile"
+        panel.message = "Choose where to save the tone-mapping parameters profile"
 
         panel.begin { [weak self] response in
             guard let self else { completion?(false); return }
@@ -914,7 +946,7 @@ class MainViewModel {
                 self.settingsExported = true
                 completion?(true)
             } catch {
-                self.errorMessage = "Failed to save settings profile: \(error.localizedDescription)"
+                self.errorMessage = "Failed to save tone-mapping parameters profile: \(error.localizedDescription)"
                 self.showError = true
                 completion?(false)
             }
@@ -930,7 +962,7 @@ class MainViewModel {
         filePanel.canChooseDirectories = false
         filePanel.allowsMultipleSelection = false
         filePanel.allowedContentTypes = [UTType.json]
-        filePanel.message = "Choose a tone-mapping settings profile to import"
+        filePanel.message = "Choose a tone-mapping parameters profile to open"
 
         filePanel.begin { [weak self] response in
             guard let self else { return }
@@ -943,13 +975,13 @@ class MainViewModel {
                 decoder.dateDecodingStrategy = .iso8601
                 profile = try decoder.decode(SettingsProfile.self, from: data)
             } catch {
-                self.errorMessage = "Failed to read settings profile: \(error.localizedDescription)"
+                self.errorMessage = "Failed to read tone-mapping parameters profile: \(error.localizedDescription)"
                 self.showError = true
                 return
             }
 
             guard profile.schemaVersion <= SettingsProfile.currentSchemaVersion else {
-                self.errorMessage = "This settings profile was created by a newer version of the app and can't be read. Please update the app."
+                self.errorMessage = "This tone-mapping parameters profile was created by a newer version of the app and can't be read. Please update the app."
                 self.showError = true
                 return
             }
@@ -1002,13 +1034,18 @@ class MainViewModel {
         panel.begin { [weak self] response in
             guard let self = self else { return }
             if response == .OK, let url = panel.url {
+                // Pass the exact URL the user chose in the save panel: it carries the sandbox grant
+                // and honors a name the user edited in the panel. Reconstructing it from the folder
+                // + a regenerated filename would both lose the grant and ignore the edited name.
                 self.exportTask = Task {
-                    await self.performExport(images: [image], outputFolder: url.deletingLastPathComponent())
+                    await self.performExport(images: [image],
+                                             outputFolder: url.deletingLastPathComponent(),
+                                             explicitOutputURLs: [url])
                 }
             }
         }
     }
-    
+
     /// Exports all loaded images.
     func exportAllImages() {
         guard !images.isEmpty else { return }
@@ -1033,7 +1070,7 @@ class MainViewModel {
     func cancelExport() { exportTask?.cancel() }
 
     /// Performs export for a list of images.
-    private func performExport(images: [HDRImage], outputFolder: URL) async {
+    private func performExport(images: [HDRImage], outputFolder: URL, explicitOutputURLs: [URL]? = nil) async {
         isExporting = true
         exportProgress = 0.0
 
@@ -1061,16 +1098,23 @@ class MainViewModel {
             // starting the hard work
             try? await Task.sleep(for: .milliseconds(32))
 
-            // Generate filename with suffix
-            let baseName = image.fileName
-            let suffix = image.settings.filenameSuffix
-            let filename = FilenameHelper.generateFilename(
-                baseName: baseName,
-                suffix: suffix,
-                extension: "heic"
-            )
-
-            let outputURL = outputFolder.appendingPathComponent(filename)
+            // Use the exact URL chosen in the save panel when provided (single export); otherwise
+            // (batch to a folder) generate the filename from the base name + per-image suffix.
+            let outputURL: URL
+            let filename: String
+            if let explicit = explicitOutputURLs, index < explicit.count {
+                outputURL = explicit[index]
+                filename = outputURL.lastPathComponent
+            } else {
+                let baseName = image.fileName
+                let suffix = image.settings.filenameSuffix
+                filename = FilenameHelper.generateFilename(
+                    baseName: baseName,
+                    suffix: suffix,
+                    extension: "heic"
+                )
+                outputURL = outputFolder.appendingPathComponent(filename)
+            }
 
             // EXPORT. `exportImage` performs the same load + tone-map the old validation pass did,
             // so we attempt it directly instead of pre-rendering a (discarded) preview. An input

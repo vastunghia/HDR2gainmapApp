@@ -9,6 +9,10 @@
 </p>
 
 <p align="center">
+  🎉🎨 <img src="https://img.shields.io/badge/NOW_WITH_RGB_GAIN_MAPS!-d50000?style=for-the-badge" alt="Now with RGB gain maps!"> 🎨🎉
+</p>
+
+<p align="center">
   <a href="https://github.com/vastunghia/HDR2gainmapApp/releases/latest"><img src="https://img.shields.io/github/v/release/vastunghia/HDR2gainmapApp?label=latest%20release&sort=semver" alt="Latest release"></a>
   <a href="https://github.com/vastunghia/HDR2gainmapApp/releases"><img src="https://img.shields.io/github/downloads/vastunghia/HDR2gainmapApp/total?label=downloads" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/platform-macOS%2015%2B-blue" alt="Platform macOS 15+">
@@ -49,11 +53,14 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 - **Anyone who wants the SDR base to look good**, not just the HDR — with precise, visual control
   over tone-mapping instead of a black-box automatic conversion.
 
-## Highlights
+## Highlights (pun intended)
 
 - **🎛️ Full creative control of the SDR base** — three tone-mapping methods (Peak Max, Percentile,
   Direct) let you decide exactly how HDR highlights roll off into SDR, instead of accepting whatever
   an automatic converter produces.
+- **🎨 RGB gain maps (new!)** — reconstruct each color channel independently for truer highlight
+  colors, not just a single luminance curve — and now the default (a monochrome gain map is still
+  available).
 - **👁️ See every stage, live** — a multi-view preview switches between **HDR Input**, **Tonemapped
   SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)**, all updating in real time as you drag
   the sliders. A draggable **comparison slider** wipes between any two views.
@@ -63,8 +70,10 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
   ecosystem *and* by standards-compliant non-Apple software, with original metadata preserved.
 - **📊 Lightroom-style histograms** — split-axis HDR/SDR histograms with always-on clipping
   statistics and an interactive clipping legend.
-- **🗂️ Batch-friendly** — batch export with progress tracking, plus exportable/importable
-  per-image "develop" settings profiles to resume work or share a look across machines.
+- **🗂️ Batch-friendly** — batch export with progress tracking, plus per-image tone-mapping parameter
+  profiles you can save and re-open to resume work or share a look across machines.
+- **⌨️ Command-line tool included** — a companion CLI (`HDR2gainmapCLI`) runs the same conversion
+  engine headlessly, for scripting and batch automation.
 
 ## Full feature list
 
@@ -104,7 +113,9 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 
 - **ISO 21496-1 compliant gain maps** — the standards-based format Apple itself writes for native HDR
   captures, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
-- **Configurable gain map resolution** (half ½× by default, like Apple's native captures, or full 1×).
+- **RGB or monochrome gain maps** — a per-channel **RGB** gain map by default, which reconstructs each
+  channel independently for truer highlight colors, or a smaller single-luminance **monochrome** one.
+- **Configurable gain map resolution** (full 1× by default for maximum fidelity, or half ½× to shrink the file).
 - **Metadata preserved** in output files.
 
 </details>
@@ -115,17 +126,17 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 - **Batch export** with progress tracking and the option to append a string of your choice to all
   file names; the running batch can be **cancelled** at any time (the current file finishes, then it
   stops, and a summary reports what was done).
-- **Export / import development settings**: save the per-image tone-mapping "develop" settings of a
+- **Save / open tone-mapping parameters**: save the per-image tone-mapping parameters of a
   whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing
   a look across machines (only images you actually customized are stored; any images listed in the
-  profile but missing from the folder are reported on import). If you close the window or quit with
-  unsaved customizations, the app **offers to export your settings first**.
+  profile but missing from the folder are reported when opening it). If you close the window or quit
+  with unsaved customizations, the app **offers to save your tone-mapping parameters first**.
 - **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the
   previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view).
-- **Thumbnail status badges**: a **"settings modified"** badge flags thumbnails whose tone-mapping
-  differs from the defaults, and a user-toggled **"ready for export"** flag (press the **M** key on
-  the current image) lets you mark the shots you have finished — the flag is persisted in the
-  settings profile.
+- **Thumbnail status badges**: a **"tone-mapping parameters modified"** badge flags thumbnails whose
+  tone-mapping differs from the defaults, and a user-toggled **"ready for export"** flag (press the
+  **M** key on the current image) lets you mark the shots you have finished — the flag is persisted in
+  the tone-mapping parameters profile.
 - **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are
   currently resident in memory (and will therefore load instantly); it updates live as images are
   cached and as older ones are evicted.
@@ -197,11 +208,11 @@ Two parameters shape the whole result — **Source Headroom** and **Target Headr
 
 The three methods below are simply three ways to arrive at a Source Headroom value; they all act on **that parameter only**. For the same resulting Source Headroom the output is identical, whichever method you used — so pick whichever feels most intuitive. (Target Headroom is set independently, in its own section.)
 
-> The same explanation is available in-app via the **?** button next to *Source Headroom*.
+> The same explanation is available in-app via the **?** button in the header of the *Tone-Mapping Parameters* section.
 
-#### Tone-Mapping Methods
+#### Source Headroom Methods
 
-**Peak Max [applies to Source Headroom only]**
+**Peak Max**
 
 ![HDR2gainmap App Screenshot - Peak Max Slider](screenshots/screenshot_slider_peakmax.png)
 
@@ -211,7 +222,7 @@ The three methods below are simply three ways to arrive at a Source Headroom val
 
 **In a nutshell:** drag to the left to 'crunch' all pixels into the SDR space; drag to the right to leave pixels as they are, ending up with all original pixels brighter than standard white being clipped in the final SDR image.
 
-**Percentile [applies to Source Headroom only]**
+**Percentile**
 
 ![HDR2gainmap App Screenshot - Percentile Slider](screenshots/screenshot_slider_percentile.png)
 
@@ -222,20 +233,34 @@ The three methods below are simply three ways to arrive at a Source Headroom val
 
 **In a nutshell:** lets you specify the percentage of pixels that should result as clipped in the final SDR image. Drag to the left to force 0.001% of pixels clipped, drag to the right to force 5% of pixels clipped.
 
-**Direct [applies to both Source and Target Headroom]**
+**Direct**
 
-![HDR2gainmap App Screenshot - Direct Sliders](screenshots/screenshot_slider_direct.png)
+![HDR2gainmap App Screenshot - Direct Slider](screenshots/screenshot_slider_direct.png)
 
-- Exposes the raw `CIToneMapHeadroom` parameters directly
-- Source headroom: defaults to measured peak luminance
-- Target headroom: defaults to 1.0 (standard SDR), can be adjusted for creative effects
+- Exposes the raw `CIToneMapHeadroom` source-headroom parameter directly
+- Defaults to the measured peak luminance
 - Useful for matching specific technical requirements or recreating known tone curves
 
-**In a nutshell:** this control lets you manually select source / target headroom specification.
+**In a nutshell:** this control lets you set the Source Headroom value directly.
+
+#### Target Headroom (Advanced)
+
+Everything above sets the **Source Headroom**. The **Target Headroom** is a *different* parameter — it
+is *not* one of the Source Headroom methods. It lives in its own *Advanced* section (a checkbox, off by
+default), so it stays out of the way until you deliberately reach for it.
+
+![HDR2gainmap App Screenshot - Target Headroom Slider](screenshots/screenshot_slider_target.png)
+
+In normal use, **leave Target Headroom at 1.0** (standard SDR) — it is not the creative control. Its
+slider works exactly like the **Direct** method does for Source Headroom: it sets the
+`CIToneMapHeadroom` target parameter directly. You would only move it off 1.0 to push the look into
+deliberately extreme/creative territory.
 
 #### Automatic Source Headroom ("Auto")
 
-The **Auto** button picks the Source Headroom for you. It searches for the **lowest** Source Headroom that still keeps clipping within a small tolerance — specifically the fraction of pixels clipped in **any single R/G/B channel**, capped at the *per-channel clip tolerance* set in Preferences (default 1%).
+The **Auto** button picks the Source Headroom for you. It searches for the **lowest** Source Headroom that still keeps clipping within a small tolerance — specifically the fraction of pixels clipped in **any single R/G/B channel**, capped at the *per-channel clip tolerance* set in Settings (default 1%).
+
+![HDR2gainmap App Screenshot - Automatic Source Headroom (Auto / Auto all)](screenshots/screenshot_auto_mode.png)
 
 Working per channel (rather than on overall clipping) curbs single-channel clipping — for example a clipped red channel that would otherwise tint the highlights. As with setting it by hand, a **lower** tolerance yields a more faithful but darker SDR base, while a **higher** tolerance yields a brighter base with more clipping.
 
@@ -243,37 +268,26 @@ The value Auto finds is written into the currently active method's parameter, so
 
 ### 2. Gain Map Generation
 
-After tone-mapping, the app generates the gain map from the pair of images:
+After tone-mapping, the app builds the gain map from the pair of images:
 
 - the base SDR image, prepared according to your taste
 - the original HDR image, from which the gain map is derived
 
 The gain map encodes the per-pixel boost needed to reconstruct the HDR rendition from the SDR base, so the image displays as the original HDR on capable displays and as the SDR base everywhere else.
 
-Internally, the computation is performed by Core Image's HDR-aware HEIF encoder: the SDR base and the original HDR image are passed together to `CIContext.heifRepresentation(...)`, which writes an in-memory HEIF whose auxiliary slot carries the gain map. The app reads that auxiliary image back out so it can be re-embedded in the final output (see Section 3).
+The app computes the gain map itself, pixel by pixel, in linear Display P3: for each pixel it takes the ratio between the HDR and SDR values and stores it log-encoded and normalized to the image's peak. By default this is done **per channel — an RGB gain map**, which reconstructs each channel independently and keeps highlight colors truer; you can instead choose a **single-luminance monochrome gain map** (smaller, but it scales all channels equally) in the Settings window. The computed gain map is then attached as a standards-based **ISO 21496-1** auxiliary image and written into the HEIC by ImageIO (see Section 3) — the same format Apple itself writes for native HDR captures on recent systems, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
 
-The result is embedded as a standards-based **ISO 21496-1 gain map** — the same format Apple itself writes for native HDR captures on recent systems, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
+> **Note:** computing the gain map directly is what makes the RGB option possible — on macOS 15 Core Image only emits a luminance gain map. A legacy path that lets Core Image compute the (monochrome) gain map is still available in the companion command-line tool via `--mono-coreimage`.
 
 > **Note:** earlier versions instead embedded the legacy Apple `HDRGainMap` scheme together with Maker Apple metadata (MakerNote tags 33 and 48). That path has been removed in favor of the ISO 21496-1 format.
 
 ### 3. Final Export
 
-Once the gain map has been generated, the app writes the final HEIC by combining the SDR base, the gain map, and the preserved source metadata. The export is built around a **single write to disk**:
+Once the gain map has been computed, the app writes the final HEIC by combining the SDR base, the gain map, and the preserved source metadata — in a **single write to disk**. The SDR base is encoded as the primary 10-bit image and the gain map is attached under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot (with matching ISO 21496-1 binary metadata) by ImageIO, all in one pass. The gain map is stored at full resolution by default, or subsampled if you pick half resolution in the Settings window. Original Exif/TIFF/GPS metadata is preserved: the app appends itself to the `Software` tag and strips the legacy Apple MakerNote headroom tags (33 & 48) so the modern ISO scheme is emitted rather than the legacy Apple one.
 
-1. **In-memory encode.** The SDR base and the original HDR are encoded to an in-memory HEIC buffer via `CIContext.heif10Representation()` on macOS 26 or later, or via the 10-bit `CIContext.heifRepresentation()` on earlier systems (selected automatically). Core Image computes and embeds the gain map here; nothing touches the disk yet.
+> **Note:** the optional Core Image monochrome path (command-line `--mono-coreimage`) works differently — it first lets Core Image compute and embed the gain map into an in-memory HEIC, then re-encodes that buffer into the ISO 21496-1 layout. Earlier versions used this two-step flow for *every* export (and an even older one wrote the HEIC to disk twice); the default RGB and monochrome paths now assemble the ISO gain map directly in a single write.
 
-2. **Re-encode to disk via ImageIO.** That in-memory buffer is then re-encoded: the gain map is optionally subsampled to the requested resolution (½× by default — see Preferences below) and embedded under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot, with matching ISO 21496-1 binary metadata. The primary image is preserved unchanged. This is the only write to disk.
-
-> **Note:** earlier versions wrote the HEIC to disk first and then reopened it to re-encode — an extra full-size write that has since been collapsed into the in-memory step above.
-
-Two export settings are configurable in the Preferences window:
-
-- **HEIC Quality** — the HEIF compression quality (default: 0.95); higher quality produces larger files with better fidelity.
-- **Gain Map Resolution** — whether the gain map is stored at half (½×, the default, matching Apple's native HDR captures) or full (1×) image resolution. A gain map is smooth and low-detail, so half resolution shrinks the file with minimal visual impact.
-
-A preview setting is also available there:
-
-- **Pixel-Peep Zoom Level** — the magnification used by click-to-zoom in the preview (100 % / 200 % / 400 %; 100 % is exact 1:1 pixels).
+The export and preview options (quality, gain map resolution, RGB vs monochrome, zoom level, …) live in the **Settings window** — see [The Settings window](#the-settings-window) below.
 
 ## Previewing & Inspecting Your Conversion
 
@@ -284,6 +298,8 @@ the conversion in real time — not just the SDR base.
 
 A segmented selector at the top of the preview column switches the main preview between four views,
 all of which update live (debounced) as you move the tone-mapping sliders:
+
+![HDR2gainmap App Screenshot - Preview mode switch and the four available previews](screenshots/screenshot_preview_modes.png)
 
 - **HDR Input** — the original HDR source, rendered in true HDR on capable displays (see EDR below).
 - **Tonemapped SDR** — the SDR base image, with the multi-color clipped-pixel overlay (opacity
@@ -301,6 +317,8 @@ On HDR-capable displays, the HDR views are rendered through a dedicated Metal su
 tone-mapped down. A live **Display Headroom (current / potential)** readout (in stops) sits under the
 view selector, so you can tell at a glance how much HDR range your display is currently providing.
 
+![HDR2gainmap App Screenshot - Display Headroom (current / potential) readout](screenshots/screenshot_EDR_readout.png)
+
 ### Comparison slider
 
 Toggle the **Single / Compare** switch to put two views side by side, split by a draggable divider.
@@ -317,36 +335,72 @@ starts fresh in Single view on the tonemapped SDR base with the clipped-pixel ov
 
 In any view, click the image to zoom toward the clicked point and click again to fit; while zoomed,
 drag to pan. The zoom factor (100 % / 200 % / 400 %, where 100 % is exact 1:1 pixels) is set in
-Preferences.
+Settings.
 
-## Saving & Reusing Tone-Mapping Settings
+## Saving & Reusing Tone-Mapping Parameters
 
-The tone-mapping ("develop") settings you craft for each image live only in memory during a
-session. To preserve them — or carry them to another machine — you can export them to a
-**settings profile**, a small human-readable JSON file, and import it back later.
+The tone-mapping parameters you craft for each image live only in memory during a
+session. To preserve them — or carry them to another machine — you can save them to a
+**tone-mapping parameters profile**, a small human-readable JSON file, and open it again later.
 
-- **Export Settings** writes a profile for the currently open folder. To keep the file compact,
-  only images whose settings differ from the defaults are stored; for each, only the parameters
-  you actually changed are saved (method, and the relevant source/target-headroom values). The
-  profile also records the source folder and the app version that produced it.
-- **Import Settings** lets you pick a profile, then confirm the folder it refers to (the file
-  picker is pre-positioned on the saved path). The matching images are reloaded with their
-  settings already applied. If the profile references images that are no longer in the folder
+- **Save Tone-Mapping Parameters** writes a profile for the currently open folder. To keep the file
+  compact, only images whose parameters differ from the defaults are stored; for each, only the
+  parameters you actually changed are saved (method, and the relevant source/target-headroom values).
+  The profile also records the source folder and the app version that produced it.
+- **Open Tone-Mapping Parameters** lets you pick a profile, then confirm the folder it refers to (the
+  file picker is pre-positioned on the saved path). The matching images are reloaded with their
+  parameters already applied. If the profile references images that are no longer in the folder
   (e.g. renamed or removed), you are notified with the list of missing files, and the remaining
   images are still applied.
 
-Both actions are available from the **File menu** (Export Settings ⇧⌘E / Import Settings ⇧⌘I),
-from the **export panel**, and — for import — directly from the **start screen**, so you can
-reopen a folder straight from a saved profile.
+Both actions are available from the **File menu** (Save Tone-Mapping Parameters ⌘S / Open
+Tone-Mapping Parameters ⌘O), from the **Control Panel** (below the tone-mapping controls), and — for
+opening — directly from the **start screen**, so you can reopen a folder straight from a saved profile.
 
 As a safety net, if you try to **close the window or quit** while one or more images carry
-customizations that have not been exported (or imported) since your last change, the app asks
-whether you want to export your settings first — so a session's work is never lost by accident.
+customizations that have not been saved (or opened from a profile) since your last change, the app asks
+whether you want to save your tone-mapping parameters first — so a session's work is never lost by
+accident.
+
+## The Settings window
+
+Open **HDR2gainmapApp ▸ Settings…** (⌘,) to configure how files are exported and previewed. The
+options are grouped into **Export**, **General Settings**, and **Updates**.
+
+![HDR2gainmap App Screenshot - Settings window](screenshots/screenshot_settings.png)
+
+**Export**
+
+- **HEIC Quality** — the HEIF compression quality (default: 0.95); higher quality produces larger
+  files with better fidelity.
+- **Gain Map Resolution** — whether the gain map is stored at full (**1×**, the default) or half
+  (**½×**) image resolution. Full keeps every detail; half shrinks the file but softens highlight
+  detail, where the gain map does most of its work.
+- **Export RGB gain map** — when on (**the default**), the app writes a 3-channel (RGB) gain map,
+  reconstructing each channel independently so highlight colors stay truer. Turn it off for a
+  monochrome (single-luminance) gain map, which scales all channels equally and is smaller.
+
+**General Settings**
+
+- **Zoom Level** — the magnification used by click-to-zoom in the preview (100 % / 200 % / 400 %;
+  100 % is exact 1:1 pixels).
+- **Auto Tone-Mapping** — the per-channel clip tolerance used by the **Auto** button (default 1 %):
+  the largest fraction of pixels Auto may clip in any single channel when picking the Source Headroom.
+  Lower → a more faithful but darker SDR base; higher → brighter, with more clipping.
+
+**Updates**
+
+- **Check for updates automatically** — when on, the app checks GitHub for a newer release at launch
+  (at most once a day) and notifies you only if one is available. A **Check Now** button runs the
+  check on demand.
+
+A **Reset defaults** button at the bottom restores every option above to its default.
 
 ## System Requirements
 
 - **macOS 15.x** (Sequoia) or later
-- **Tested on**: Intel-based Mac running macOS 15.x + Apple Silicon running macOS 26.x
+- **Tested on**: macOS 15.x on both Intel and Apple Silicon, and macOS 26.x on Apple Silicon
+  (export + gain-map validation run on all three in CI)
 
 ## Verifying Output
 
@@ -400,11 +454,28 @@ open HDR2gainmapApp.xcodeproj
 
 Build and run using Xcode (⌘R).
 
+### Command-line tool
+
+The same Xcode project also builds **`HDR2gainmapCLI`**, a command-line version that drives the same
+conversion engine headlessly — useful for scripting and batch jobs. Build the `HDR2gainmapCLI` scheme
+(Release), then run it with an input and output path; run it with no arguments to print the full
+option list:
+
+```bash
+HDR2gainmapCLI [OPTIONS] <input.png|tif> <output.heic>
+```
+
+Options include `--auto` (auto-pick the source headroom), `--gainmap-subsample=N` (gain map
+resolution), `--rgb` (emit an RGB gain map instead of the CLI's monochrome default), and `--verify`
+(validate the output after writing).
+
 ## Technical Details
 
 ### Histogram Implementation
 
 The application uses a **split-axis histogram** approach:
+
+![HDR2gainmap App Screenshot - Split-axis HDR/SDR histograms](screenshots/screenshot_histograms.png)
 
 - **SDR region** (0 to reference white ≈ 203 nits): Maps luminance values using an sRGB-shaped curve
 - **HDR region** (reference white to maximum headroom): Maps luminance values logarithmically in stops
@@ -419,6 +490,8 @@ The histograms use a Lightroom-style presentation: an opaque measured-color pale
 
 The overlay uses a **multi-color scheme** to identify which channels are clipped:
 
+![HDR2gainmap App Screenshot - Multi-color clipped-pixel overlay](screenshots/screenshot_clipping_mask.png)
+
 - **Primary colors** (Red, Green, Blue): Single channel clipping
 - **Secondary colors** (Yellow, Magenta, Cyan): Two-channel clipping
 - **Dim variants** (50% intensity): Channel clipping with luminance ≥ 1.0
@@ -427,6 +500,23 @@ The overlay uses a **multi-color scheme** to identify which channels are clipped
 This allows precise diagnosis of clipping issues across the color gamut. A **Clipped Pixel Overlay
 Opacity** slider (by the histograms) fades the overlay from fully opaque down to hidden, so you can
 inspect the underlying SDR base without losing the always-on clipping readout.
+
+### Clipping Legend & Statistics
+
+Next to the histograms, a **"Show legend & stats"** button opens the always-on-top **Clipping Legend &
+Statistics** window — a reference for the overlay colors paired with a precise breakdown of the
+clipping in the current image.
+
+![HDR2gainmap App Screenshot - Clipping Legend & Statistics window](screenshots/screenshots_stats_panel.png)
+
+- **Legend** — a color key (an RGB diagram) showing which overlay color corresponds to which clipped
+  channel(s), matching the scheme above.
+- **Statistics** — per-category clipped-pixel **counts and percentages**: single-channel (R / G / B),
+  two-channel (Yellow / Magenta / Cyan), and all-three (white), each split into bright and **dim**
+  (luminance ≥ 1.0) variants, plus a grand total of clipped pixels.
+
+The window stays open and updates live as you adjust the tone-mapping, so you can watch exactly how
+many pixels clip — and in which channels — while you work.
 
 ### Metal Acceleration
 

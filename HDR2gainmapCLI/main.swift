@@ -12,6 +12,9 @@ struct CLIArguments {
     let gainMapSubsample: Int?
     let auto: Bool
     let autoTolerancePercent: Double?
+    let rgb: Bool           // emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma
+    let monoCoreImage: Bool // use the legacy Core Image mono gain map (PQ) instead of the default
+                            // hand-assembled luma map (Display P3)
     let skipPreview: Bool   // experimental: skip generatePreview so the auto search runs cold (perf bench)
     let searchOnly: Bool    // experimental: run the auto search then exit before export (perf bench)
 
@@ -24,6 +27,8 @@ struct CLIArguments {
         var gainMapSubsample: Int? = nil
         var auto = false
         var autoTolerancePercent: Double? = nil
+        var rgb = false
+        var monoCoreImage = false
         var skipPreview = false
         var searchOnly = false
         var positionalArgs: [String] = []
@@ -41,6 +46,10 @@ struct CLIArguments {
                 gainMapSubsample = v
             } else if arg == "--auto" {
                 auto = true
+            } else if arg == "--rgb" {
+                rgb = true
+            } else if arg == "--mono-coreimage" {
+                monoCoreImage = true
             } else if arg == "--skip-preview" {
                 skipPreview = true
             } else if arg == "--search-only" {
@@ -63,6 +72,12 @@ struct CLIArguments {
             return nil
         }
 
+        // --rgb and --mono-coreimage select mutually exclusive gain-map kinds.
+        if rgb && monoCoreImage {
+            print("❌ --rgb and --mono-coreimage are mutually exclusive (pick one gain-map kind)")
+            return nil
+        }
+
         return CLIArguments(
             inputPath: positionalArgs[0],
             outputPath: positionalArgs[1],
@@ -71,6 +86,8 @@ struct CLIArguments {
             gainMapSubsample: gainMapSubsample,
             auto: auto,
             autoTolerancePercent: autoTolerancePercent,
+            rgb: rgb,
+            monoCoreImage: monoCoreImage,
             skipPreview: skipPreview,
             searchOnly: searchOnly
         )
@@ -87,10 +104,13 @@ struct CLIArguments {
         Options:
           -v, --verbose    Print detailed processing information
           --verify         Verify output file after export
-          --gainmap-subsample=N  Gain map resolution divisor: 1 = full, 2 = half (default)
+          --gainmap-subsample=N  Gain map resolution divisor: 1 = full (default), 2 = half
           --auto           Auto-pick the source headroom: lowest value keeping the fraction of
                            pixels clipped in any single SDR channel within the tolerance
           --auto-tolerance=PCT   Per-channel clip tolerance for --auto, percent of pixels (default 1.0)
+          --rgb            Emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma (monochrome)
+          --mono-coreimage Use the legacy Core Image mono gain map (tagged PQ) instead of the default
+                           hand-assembled luma map (Display P3). Mutually exclusive with --rgb.
 
         Example:
           HDR2gainmapCLI input.png output.heic --verify
@@ -185,15 +205,23 @@ func main() async {
     // Create HDRImage and processor
     let image = HDRImage(url: inputURL, loadThumbnailImmediately: false)
     // The engine reads the gain map subsample factor from UserDefaults (shared with the GUI
-    // preference). Default is 2 (half) when unset.
+    // preference). Default is 1 (full) when unset.
     if let gs = args.gainMapSubsample {
         UserDefaults.standard.set(gs, forKey: "gainMapSubsampleFactor")
     }
+    // The engine reads the gain-map kind from UserDefaults. We set BOTH keys explicitly every run
+    // (including the false case) — they live in the CLI's own argv0 UserDefaults domain, separate
+    // from the GUI app's domain — so each invocation is deterministic regardless of residual state
+    // left by a prior invocation on the same machine/runner. (The engine checks gainMapRGB first.)
+    UserDefaults.standard.set(args.rgb, forKey: "gainMapRGB")
+    UserDefaults.standard.set(args.monoCoreImage, forKey: "gainMapMonoCoreImage")
     let processor = HDRProcessor.shared
 
     if args.verbose {
-        print("   Gain map: luma (monochrome)")
-        let subsample = args.gainMapSubsample ?? 2
+        let kind = args.rgb ? "RGB (3-channel)"
+            : (args.monoCoreImage ? "luma (Core Image, PQ)" : "luma (manual, Display P3)")
+        print("   Gain map: \(kind)")
+        let subsample = args.gainMapSubsample ?? 1
         print("   Gain map resolution: \(subsample <= 1 ? "full (1×)" : "1/\(subsample)×")")
     }
     

@@ -19,9 +19,9 @@ struct ControlPanel: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                // Settings header (consistent with Histograms header)
+                // Tone-Mapping Parameters header (consistent with Histograms header)
                 HStack(spacing: 8) {
-                    Text("Settings")
+                    Text("Tone-Mapping Parameters")
                         .font(.headline)
 
                     Button {
@@ -93,7 +93,7 @@ struct ControlPanel: View {
                         Image(systemName: "gearshape")
                             .font(.system(size: 40))
                             .foregroundStyle(.secondary)
-                        Text("Select an image to adjust settings")
+                        Text("Select an image to adjust its tone-mapping parameters")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
@@ -160,7 +160,7 @@ struct TonemapControlsSection: View {
                     }
                 }
                 .confirmationDialog(
-                    "\(viewModel.autoTuneModifiedCount) image(s) already have hand-tuned settings",
+                    "\(viewModel.autoTuneModifiedCount) image(s) already have hand-tuned tone-mapping parameters",
                     isPresented: $viewModel.showAutoTuneConfirmation
                 ) {
                     Button("Re-tune all images") {
@@ -255,13 +255,16 @@ struct TonemapControlsSection: View {
                 ))
                 .disabled(!viewModel.isCurrentImageValid)
                 
-                // Target headroom slider (enabled only when checkbox is checked)
-                TargetHeadroomControls(
-                    settings: $settings,
-                    measuredHeadroom: viewModel.measuredHeadroom,
-                    onSettingsChange: onSettingsChange,
-                    isDisabled: !viewModel.isCurrentImageValid || !settings.adjustTargetHeadroom
-                )
+                // Target headroom slider — shown only when the user opts into adjusting it, so by
+                // default (off) it (and its surrounding text) takes no space at all.
+                if settings.adjustTargetHeadroom {
+                    TargetHeadroomControls(
+                        settings: $settings,
+                        measuredHeadroom: viewModel.measuredHeadroom,
+                        onSettingsChange: onSettingsChange,
+                        isDisabled: !viewModel.isCurrentImageValid
+                    )
+                }
             }
             
             Divider()
@@ -281,10 +284,38 @@ struct TonemapControlsSection: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
             }
+
+            Divider()
+
+            // Save / open the folder's per-image tone-mapping parameters as a JSON profile. Grouped
+            // here with the tone-mapping controls (and their Reset) since that is what they persist.
+            VStack(spacing: 8) {
+                Button(action: {
+                    viewModel.exportSettingsProfile()
+                }) {
+                    Label("Save Tone-Mapping Parameters", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(viewModel.images.isEmpty || viewModel.isExporting)
+                .help("Save the tone-mapping parameters of this folder to a JSON profile")
+
+                Button(action: {
+                    viewModel.importSettingsProfile()
+                }) {
+                    Label("Open Tone-Mapping Parameters", systemImage: "folder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .disabled(viewModel.isExporting)
+                .help("Open a previously saved tone-mapping parameters profile")
+            }
         }
         .padding(.horizontal)
     }
-    
+
     // Add this helper function inside TonemapControlsSection:
     private func defaultHintText() -> String {
         switch settings.sourceHeadroomMethod {
@@ -690,33 +721,18 @@ struct ExportSection: View {
             .controlSize(.large)
             .disabled(viewModel.images.isEmpty || viewModel.isExporting)
 
-            Divider()
-                .padding(.vertical, 4)
-
-            // Settings profile: save / restore per-image tone-mapping settings for the folder.
-            HStack(spacing: 8) {
-                Button(action: {
-                    viewModel.exportSettingsProfile()
-                }) {
-                    Label("Export Settings", systemImage: "slider.horizontal.below.square.and.square.filled")
-                        .frame(maxWidth: .infinity)
+            // Reminder that the export-related options (HEIC quality, gain map, …) live in the app's
+            // Settings window; the word "Settings" links straight to it.
+            HStack(spacing: 0) {
+                Text("Remember to set export settings in the app ")
+                    .foregroundStyle(.secondary)
+                SettingsLink {
+                    Text("Settings")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(viewModel.images.isEmpty || viewModel.isExporting)
-                .help("Save the tone-mapping settings of this folder to a JSON profile")
-
-                Button(action: {
-                    viewModel.importSettingsProfile()
-                }) {
-                    Label("Import Settings", systemImage: "square.and.arrow.down")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
-                .disabled(viewModel.isExporting)
-                .help("Load a previously saved tone-mapping settings profile")
+                .buttonStyle(.link)
             }
+            .font(.caption)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal)
     }

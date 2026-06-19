@@ -7,6 +7,14 @@ struct HDR2gainmapApp: App {
     // by SessionWindowGuard). See SessionTerminationGuard.swift.
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        // RGB gain maps are the default. Register it so the engine's bare `UserDefaults.bool(forKey:)`
+        // reads (and a fresh GUI that has never opened Preferences) resolve to RGB even before any
+        // value is stored. A user's explicit Preferences toggle is written to the standard domain and
+        // overrides this registration-domain default.
+        UserDefaults.standard.register(defaults: ["gainMapRGB": true])
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -20,6 +28,9 @@ struct HDR2gainmapApp: App {
         Settings {
             PreferencesView()
         }
+        // The Settings scene is fixed-to-content by default; this lets it be resized down to the
+        // content's min size and up freely (paired with EnableWindowResize, which adds the handle).
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -51,16 +62,16 @@ struct SettingsProfileCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .importExport) {
-            Button("Export Settings…") {
+            Button("Save Tone-Mapping Parameters…") {
                 viewModel?.exportSettingsProfile()
             }
-            .keyboardShortcut("e", modifiers: [.command, .shift])
+            .keyboardShortcut("s", modifiers: [.command])
             .disabled(viewModel == nil || (viewModel?.images.isEmpty ?? true))
 
-            Button("Import Settings…") {
+            Button("Open Tone-Mapping Parameters…") {
                 viewModel?.importSettingsProfile()
             }
-            .keyboardShortcut("i", modifiers: [.command, .shift])
+            .keyboardShortcut("o", modifiers: [.command])
             .disabled(viewModel == nil)
         }
     }

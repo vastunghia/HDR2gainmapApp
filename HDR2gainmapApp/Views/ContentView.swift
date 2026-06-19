@@ -84,7 +84,7 @@ struct FolderSelectionView: View {
             }
 
             VStack(spacing: 12) {
-                Text("…or import previously saved settings for a folder of HDR PNG/TIFF images")
+                Text("…or open previously saved tone-mapping parameters for a folder of HDR PNG/TIFF images")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -92,11 +92,11 @@ struct FolderSelectionView: View {
                 Button(action: {
                     viewModel.importSettingsProfile()
                 }) {
-                    Label("Import Settings", systemImage: "square.and.arrow.down")
+                    Label("Open Tone-Mapping Parameters", systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .help("Open a folder from a saved tone-mapping settings profile")
+                .help("Open a folder from a saved tone-mapping parameters profile")
             }
         }
         .padding(60)
@@ -119,6 +119,12 @@ struct MainInterfaceView: View {
 
     // Comparison help dialog (shown on entering Compare unless dismissed permanently).
     @AppStorage("hideComparisonHelp") private var hideComparisonHelp = false
+
+    /// Mirror the export preferences. The gain-map–dependent previews ("Gain Map" / "Final Output")
+    /// depend on both the mono/RGB kind and the gain-map resolution, so changing either in Settings
+    /// must re-render them.
+    @AppStorage("gainMapRGB") private var gainMapRGB = true
+    @AppStorage("gainMapSubsampleFactor") private var gainMapSubsampleFactor = 1
     @State private var showComparisonHelp = false
 
     /// A preview-mode chip — identical in both modes. In Single it's tappable (selected highlighted);
@@ -258,6 +264,11 @@ struct MainInterfaceView: View {
             )
             // M marks / unmarks the current image as "ready for export".
             .markKeyShortcut { viewModel.toggleMarkForSelected() }
+            // Switching mono ↔ RGB gain map, or its resolution (1× ↔ ½×), in Settings changes the
+            // "Gain Map" / "Final Output" previews; the cache key folds both prefs in, so a re-render
+            // picks the right variant. Covers single and Compare views and shows the loading spinner.
+            .onChange(of: gainMapRGB) { viewModel.refreshAfterGainMapSettingChange() }
+            .onChange(of: gainMapSubsampleFactor) { viewModel.refreshAfterGainMapSettingChange() }
         }
     }
 }

@@ -10,8 +10,8 @@ final class SessionCoordinator {
     private init() {}
 }
 
-/// Shared "export your settings before closing?" prompt, used by both the window-close and the
-/// app-quit paths. Shows the alert only when the session has unsaved, non-default settings.
+/// Shared "save your tone-mapping parameters before closing?" prompt, used by both the window-close
+/// and the app-quit paths. Shows the alert only when the session has unsaved, non-default parameters.
 /// `onResolved(proceed)` is called with `true` when the caller may close/terminate (the user either
 /// exported successfully or chose to discard) and `false` when it must abort (Cancel, or the save
 /// panel was dismissed).
@@ -21,11 +21,11 @@ enum SessionExportPrompt {
         guard viewModel.hasUnsavedSettingsToExport() else { onResolved(true); return }
 
         let alert = NSAlert()
-        alert.messageText = "Export your settings before closing?"
-        alert.informativeText = "You changed the tone-mapping settings of one or more images. "
-            + "Export them to a JSON profile so you can restore them in a later session?"
-        alert.addButton(withTitle: "Export Settings…") // .alertFirstButtonReturn
-        alert.addButton(withTitle: "Don't Export")      // .alertSecondButtonReturn
+        alert.messageText = "Save your tone-mapping parameters before closing?"
+        alert.informativeText = "You changed the tone-mapping parameters of one or more images. "
+            + "Save them to a JSON profile so you can restore them in a later session?"
+        alert.addButton(withTitle: "Save Tone-Mapping Parameters…") // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Don't Save")        // .alertSecondButtonReturn
         alert.addButton(withTitle: "Cancel")            // .alertThirdButtonReturn
 
         switch alert.runModal() {
