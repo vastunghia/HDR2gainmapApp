@@ -96,9 +96,9 @@ jobs:
         chmod +x "$CLI_PATH"
 
     # Export the same input six ways — {full, half} gain-map resolution × three gain-map kinds:
-    #   monoManual = luma gain map we hand-assemble, aux tagged Display P3 by us (now the DEFAULT)
+    #   monoManual = luma gain map we hand-assemble, aux tagged ITUR_2100_PQ by us (now the DEFAULT)
     #   monoCI     = legacy luma gain map computed by Core Image, aux tagged PQ (--mono-coreimage)
-    #   rgb        = 3-channel gain map we hand-assemble, aux Display P3 (--rgb)
+    #   rgb        = 3-channel gain map we hand-assemble, aux tagged ITUR_2100_PQ (--rgb)
     # Always with Auto tone-mapping. HEIC quality is left unset so the engine uses its 0.95 default.
     #
     # The CLI writes the gainMapRGB / gainMapMonoManual keys explicitly on EVERY invocation (both the

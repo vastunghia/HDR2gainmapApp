@@ -183,6 +183,12 @@ class HDRProcessor {
     // and these color spaces are never mutated, so they are safe to use off the main actor.
     nonisolated private let linear_p3 = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
     nonisolated private let p3_cs = CGColorSpace(name: CGColorSpace.displayP3)!
+    // Color space tag for the manual gain-map aux. Must be an HDR space (PQ), NOT Display P3: iOS's
+    // "optimized version" regeneration strips a gain map tagged with an SDR space (Display P3),
+    // degrading the photo to SDR on zoom after iCloud sync. The tag is only a classification flag —
+    // the HDR reconstruction is governed by the ISO 21496-1 metadata, not this color space (verified
+    // bit-identical P3 vs PQ), so it carries no color/primaries risk for mono or RGB gain maps.
+    nonisolated private let gainmap_cs = CGColorSpace(name: CGColorSpace.itur_2100_PQ)!
 
     // Metal-backed histogram calculator (falls back to CPU when unavailable).
     // Internally serialized with an NSLock, so it is safe to call from background tasks.
@@ -786,7 +792,7 @@ class HDRProcessor {
             kCGImageAuxiliaryDataInfoData: gm.data,
             kCGImageAuxiliaryDataInfoDataDescription: desc,
             kCGImageAuxiliaryDataInfoMetadata: meta,
-            kCGImageAuxiliaryDataInfoColorSpace: p3_cs,
+            kCGImageAuxiliaryDataInfoColorSpace: gainmap_cs,       // ← PQ, so iOS keeps the gain map (see gainmap_cs)
         ]
 
         var imgProps = baseProps
@@ -904,7 +910,7 @@ class HDRProcessor {
             kCGImageAuxiliaryDataInfoData: gm.data,
             kCGImageAuxiliaryDataInfoDataDescription: desc,
             kCGImageAuxiliaryDataInfoMetadata: meta,
-            kCGImageAuxiliaryDataInfoColorSpace: p3_cs,             // ← our choice: Display P3
+            kCGImageAuxiliaryDataInfoColorSpace: gainmap_cs,       // ← PQ, so iOS keeps the gain map (see gainmap_cs)
         ]
 
         var imgProps = baseProps

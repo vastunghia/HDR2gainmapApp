@@ -109,8 +109,8 @@ struct CLIArguments {
                            pixels clipped in any single SDR channel within the tolerance
           --auto-tolerance=PCT   Per-channel clip tolerance for --auto, percent of pixels (default 1.0)
           --rgb            Emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma (monochrome)
-          --mono-coreimage Use the legacy Core Image mono gain map (tagged PQ) instead of the default
-                           hand-assembled luma map (Display P3). Mutually exclusive with --rgb.
+          --mono-coreimage Use the legacy Core Image mono gain map instead of the default
+                           hand-assembled luma map. Mutually exclusive with --rgb.
 
         Example:
           HDR2gainmapCLI input.png output.heic --verify
