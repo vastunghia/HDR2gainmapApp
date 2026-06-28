@@ -494,8 +494,8 @@ The overlay uses a **multi-color scheme** to identify which channels are clipped
 
 - **Primary colors** (Red, Green, Blue): Single channel clipping
 - **Secondary colors** (Yellow, Magenta, Cyan): Two-channel clipping
-- **Dim variants** (50% intensity): Channel clipping with luminance ≥ 1.0
-- **Black**: All three channels clipped (maxRGB > 1.0)
+- **Dim variants** (50% intensity): Channel clipping with luminance also at white
+- **Black**: All three channels clipped (maxRGB at the SDR white ceiling)
 
 This allows precise diagnosis of clipping issues across the color gamut. A **Clipped Pixel Overlay
 Opacity** slider (by the histograms) fades the overlay from fully opaque down to hidden, so you can
@@ -513,7 +513,7 @@ clipping in the current image.
   channel(s), matching the scheme above.
 - **Statistics** — per-category clipped-pixel **counts and percentages**: single-channel (R / G / B),
   two-channel (Yellow / Magenta / Cyan), and all-three (white), each split into bright and **dim**
-  (luminance ≥ 1.0) variants, plus a grand total of clipped pixels.
+  (luminance also at white) variants, plus a grand total of clipped pixels.
 
 The window stays open and updates live as you adjust the tone-mapping, so you can watch exactly how
 many pixels clip — and in which channels — while you work.

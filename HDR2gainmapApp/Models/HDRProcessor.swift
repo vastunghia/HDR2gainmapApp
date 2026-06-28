@@ -1360,13 +1360,21 @@ class HDRProcessor {
         return max(1, min(cores, ramCap, 16))
     }
 
+    /// Clip-detection threshold for the tone-mapped SDR base. A clipped pixel is one whose channel
+    /// (or luma) is pinned **at the SDR ceiling** (≈1.0), not strictly above it: `CIToneMapHeadroom`
+    /// caps its output at the target headroom (1.0), so on neutral/monochrome content the crushed
+    /// highlights land *at* 1.0 and a strict `>1` test misses them entirely (saturated colour content
+    /// overshoots past 1.0, which is why a `>1` test only appeared to work there). 0.9999 catches the
+    /// pinned pixels while staying tight enough not to flag near-white-but-unclipped tones; verified
+    /// to leave colour-image counts essentially unchanged.
+    nonisolated static let clipCeilingThreshold: CGFloat = 0.9999
+
     /// Worst per-channel clip fraction (0...1) of the SDR rendering: `max(frac_R, frac_G, frac_B)`,
-    /// where `frac_c` is the fraction of pixels whose channel c exceeds 1+eps (counted independently
-    /// of the other channels). Limiting this curbs single-channel clipping (e.g. a clipped R channel
-    /// shifts the reconstructed tint toward yellow).
+    /// where `frac_c` is the fraction of pixels whose channel c is pinned at the SDR ceiling (counted
+    /// independently of the other channels). Limiting this curbs single-channel clipping (e.g. a
+    /// clipped R channel shifts the reconstructed tint toward yellow).
     nonisolated private func maxPerChannelClipFraction(sdr: CIImage, context: CIContext) -> Double {
-        let eps: CGFloat = 1e-6
-        let thr: CGFloat = 1.0 + eps
+        let thr = Self.clipCeilingThreshold
 
         let rMask = thresh01(extractChannel(sdr, r: 1, g: 0, b: 0), threshold: thr)
         let gMask = thresh01(extractChannel(sdr, r: 0, g: 1, b: 0), threshold: thr)
@@ -1818,9 +1826,9 @@ class HDRProcessor {
 
     /// The 13 mutually-exclusive clipped-pixel category masks (each a binary 0/1 image in its R
     /// channel) plus the pixel total. Shared by the stats counting and the overlay compositing so the
-    /// two stay in lock-step. Categories for clipped SDR pixels (maxRGB > 1):
+    /// two stay in lock-step. Categories for clipped SDR pixels (a channel pinned at the ceiling, ≈1):
     /// - red/green/blue: only R / G / B clipped; yellow/magenta/cyan: 2 channels clipped.
-    /// - "*_dim" variants: the above when **Y ≥ 1** (luma clipped too); `all3`: R&G&B all clipped.
+    /// - "*_dim" variants: the above when **Y is also at the ceiling** (luma clipped too); `all3`: R&G&B all clipped.
     nonisolated private struct ClippingMasks {
         let total: Int
         let onlyR_bright: CIImage, onlyG_bright: CIImage, onlyB_bright: CIImage
@@ -1850,14 +1858,13 @@ class HDRProcessor {
         }
         func andNot(_ a: CIImage, _ b: CIImage) -> CIImage { andMask(a, invert01(b)) } // a ∧ ¬b
 
-        // Per-channel masks (threshold 1.0 + optional epsilon).
-        let eps: CGFloat = 1e-6
-        let thr: CGFloat = 1.0 + eps
+        // Per-channel masks: a channel pinned at the SDR ceiling (≈1.0) counts as clipped.
+        let thr = Self.clipCeilingThreshold
         let rMask = thresh01(extractChannel(sdr, r: 1, g: 0, b: 0), threshold: thr)
         let gMask = thresh01(extractChannel(sdr, r: 0, g: 1, b: 0), threshold: thr)
         let bMask = thresh01(extractChannel(sdr, r: 0, g: 0, b: 1), threshold: thr)
 
-        // Luma (Y) mask, to split "bright" (Y < 1) from "dim" (Y ≥ 1).
+        // Luma (Y) mask, to split "bright" (Y below ceiling) from "dim" (Y at ceiling).
         let yMask = thresh01(linear_luma(sdr), threshold: thr)
 
         let notR = invert01(rMask), notG = invert01(gMask), notB = invert01(bMask)
