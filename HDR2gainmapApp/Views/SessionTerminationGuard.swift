@@ -84,7 +84,9 @@ struct SessionWindowGuard: NSViewRepresentable {
     final class Coordinator: NSObject, NSWindowDelegate {
         weak var viewModel: MainViewModel?
         private weak var window: NSWindow?
-        private weak var previousDelegate: NSWindowDelegate?
+        // `nonisolated(unsafe)`: only ever touched on the main thread (installed in `ensureInstalled`,
+        // read by the nonisolated NSObject forwarding overrides below, which AppKit calls on main).
+        nonisolated(unsafe) private weak var previousDelegate: NSWindowDelegate?
         private var forceClose = false
 
         init(viewModel: MainViewModel) { self.viewModel = viewModel }
@@ -111,10 +113,11 @@ struct SessionWindowGuard: NSViewRepresentable {
         }
 
         // MARK: Forward all other delegate messages to SwiftUI's original delegate.
-        override func responds(to aSelector: Selector!) -> Bool {
+        // `nonisolated` to match NSObject's isolation for these overrides (AppKit calls them on main).
+        nonisolated override func responds(to aSelector: Selector!) -> Bool {
             super.responds(to: aSelector) || (previousDelegate?.responds(to: aSelector) ?? false)
         }
-        override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        nonisolated override func forwardingTarget(for aSelector: Selector!) -> Any? {
             (previousDelegate?.responds(to: aSelector) ?? false) ? previousDelegate : nil
         }
     }

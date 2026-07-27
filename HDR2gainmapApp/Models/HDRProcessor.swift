@@ -259,7 +259,7 @@ class HDRProcessor {
                 return try ciImageToNSImage(cached, hdr: mode.isHDR)
             }
             let t = Prof.tic()
-            let r = try await renderPreviewCore(params: params, baseKey: baseKey)
+            let r = try await renderPreviewCore(params: params, baseKey: baseKey as String)
             Prof.toc("preview MISS renderCore [\(file)]", t)
             return r.image
         }
@@ -297,7 +297,7 @@ class HDRProcessor {
         // 3) MISS → render off the main actor (load + tone-map + overlay) so the UI stays
         //    responsive; only the cache lookups above run on the main actor.
         let t = Prof.tic()
-        let r = try await renderPreviewCore(params: params, baseKey: baseKey)
+        let r = try await renderPreviewCore(params: params, baseKey: baseKey as String)
         Prof.toc("preview MISS renderCore [\(file)]", t)
         reportClipping?(r.clipped, r.total, r.detailed)
         return r.image
@@ -309,8 +309,12 @@ class HDRProcessor {
     /// runs off the main thread even with `NonisolatedNonsendingByDefault` enabled.
     @concurrent nonisolated private func renderPreviewCore(
         params: PreviewParams,
-        baseKey: NSString
+        baseKey: String
     ) async throws -> (image: NSImage, clipped: Int, total: Int, detailed: DetailedClippingStats?) {
+
+        // Cross the actor boundary as a value-type `String` (Sendable); the NSCache API below wants
+        // an `NSString`, so re-bridge here. The bridge is lossless and cheap.
+        let baseKey = baseKey as NSString
 
         let file = params.url.lastPathComponent
 
@@ -505,7 +509,7 @@ class HDRProcessor {
             : previewBaseCache.object(forKey: baseKey) != nil
         if !previewWarm {
             if Task.isCancelled { return }
-            _ = try? await renderPreviewCore(params: params, baseKey: baseKey)
+            _ = try? await renderPreviewCore(params: params, baseKey: baseKey as String)
         }
 
         // Warm the HDR-input histogram too: it depends only on the source image (not the
@@ -1099,7 +1103,9 @@ class HDRProcessor {
     
     /// Immutable lookup table for percentile-derived headroom.
     /// Stores a cumulative distribution function (CDF) over `bins` buckets normalized to the image peak luminance.
-    nonisolated final class PercentileCDFBox: NSObject {
+    /// `@unchecked Sendable`: every stored property is an immutable `let`, so instances (built off the
+    /// main actor in `buildPercentileCDF`, then handed back and cached) are safe to share across actors.
+    nonisolated final class PercentileCDFBox: NSObject, @unchecked Sendable {
         let maxNits: Float
         let cdf: [Int]   // inclusive prefix sums; last element equals the total sample count
         let bins: Int
@@ -2132,7 +2138,7 @@ class HDRProcessor {
             cachedBase = hit
         } else {
             // Render off-main to populate the base cache, then read it back.
-            _ = try await renderPreviewCore(params: params, baseKey: baseKey)
+            _ = try await renderPreviewCore(params: params, baseKey: baseKey as String)
             guard let rendered = previewBaseCache.object(forKey: baseKey) else {
                 throw ProcessingError.imageConversionFailed
             }
