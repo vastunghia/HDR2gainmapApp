@@ -522,9 +522,12 @@ many pixels clip — and in which channels — while you work.
 
 The application leverages Metal compute shaders for performance-critical operations:
 
-- **Histogram calculation**: 10-50× faster than CPU implementation
-- **Peak luminance detection**: 10-100× faster than CPU implementation
-- **Percentile CDF generation**: Cached for real-time slider response
+- **HDR input analysis**: a single GPU pass over the linearized HDR image — the very pixels the
+  tone-mapper consumes — yields the HDR histogram, the peak luminance (measured headroom) and the
+  percentile CDF together. Because it reads the decoded image rather than the file's encoded samples,
+  these are correct for PQ and HLG inputs alike, and for any source primaries.
+- **SDR histogram**: computed on the GPU from the tone-mapped SDR base.
+- **Percentile CDF**: cached per image for real-time slider response.
 
 Metal acceleration is automatically detected and enabled when available, with graceful CPU fallback.
 
@@ -532,8 +535,9 @@ Metal acceleration is automatically detected and enabled when available, with gr
 
 The application implements multiple cache layers for performance:
 
-- **CIImage cache**: Loaded HDR images (stored in linear Display P3)
-- **Raw pixel data cache**: 16-bit PQ samples for histogram/headroom calculation
+- **CIImage cache**: Loaded HDR images (linear Display P3)
+- **Source decode cache**: each decoded input file plus its metadata, so the linear image can be rebuilt without re-reading the disk
+- **Measurement caches**: measured headroom, percentile CDF and HDR histogram per image
 - **Preview cache**: Separate caches for base SDR and overlay variants
 - **Percentile CDF cache**: Pre-computed lookup tables for real-time slider response
 - **Metadata cache**: Image headers to avoid redundant disk I/O

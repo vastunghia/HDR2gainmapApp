@@ -19,30 +19,15 @@ float srgbEOTF(float code) {
     }
 }
 
-// PQ EOTF (ST 2084) (code value -> linear light)
-float pqEOTF(float code) {
-    const float m1 = 2610.0f / 16384.0f;
-    const float m2 = 2523.0f / 32.0f;
-    const float c1 = 3424.0f / 4096.0f;
-    const float c2 = 2413.0f / 128.0f;
-    const float c3 = 2392.0f / 128.0f;
-    
-    float v = clamp(code, 0.0f, 1.0f);
-    float vp = pow(v, 1.0f / m2);
-    float num = max(vp - c1, 0.0f);
-    float den = c2 - c3 * vp;
-    return pow(num / den, 1.0f / m1);
-}
-
 // Binary search to locate the histogram bin
 uint findBin(float value, constant float* edges, uint edgeCount) {
     if (value < edges[0] || value > edges[edgeCount - 1]) {
         return edgeCount;
     }
-    
+
     uint low = 0;
     uint high = edgeCount - 2;
-    
+
     while (low <= high) {
         uint mid = (low + high) / 2;
         if (value >= edges[mid] && value < edges[mid + 1]) {
@@ -55,15 +40,44 @@ uint findBin(float value, constant float* edges, uint edgeCount) {
             low = mid + 1;
         }
     }
-    
+
     if (abs(value - edges[edgeCount - 1]) < 1e-6f) {
         return edgeCount - 2;
     }
-    
+
     return edgeCount;
 }
 
-// SDR histogram kernel
+// Bins one pixel's R/G/B/Y — all in u-space (linear, relative to reference white) — into the four
+// histograms. Shared by both kernels so they bin identically.
+void accumulatePixel(float rU, float gU, float bU, float yU,
+                     constant float* edges, uint binCount,
+                     device atomic_uint* redHist, device atomic_uint* greenHist,
+                     device atomic_uint* blueHist, device atomic_uint* lumaHist) {
+    uint edgeCount = binCount + 1;
+
+    uint rBin = findBin(rU, edges, edgeCount);
+    if (rBin < binCount) {
+        atomic_fetch_add_explicit(&redHist[rBin], 1, memory_order_relaxed);
+    }
+
+    uint gBin = findBin(gU, edges, edgeCount);
+    if (gBin < binCount) {
+        atomic_fetch_add_explicit(&greenHist[gBin], 1, memory_order_relaxed);
+    }
+
+    uint bBin = findBin(bU, edges, edgeCount);
+    if (bBin < binCount) {
+        atomic_fetch_add_explicit(&blueHist[bBin], 1, memory_order_relaxed);
+    }
+
+    uint yBin = findBin(yU, edges, edgeCount);
+    if (yBin < binCount) {
+        atomic_fetch_add_explicit(&lumaHist[yBin], 1, memory_order_relaxed);
+    }
+}
+
+// SDR histogram kernel: display-referred P3 code values (sRGB transfer), decoded to linear u-space.
 kernel void calculateHistogram(
                                texture2d<half, access::read> inputTexture [[texture(0)]],
                                constant float* edges [[buffer(0)]],
@@ -74,156 +88,83 @@ kernel void calculateHistogram(
                                constant HistogramParams& params [[buffer(5)]],
                                uint2 gid [[thread_position_in_grid]]
                                ) {
-    uint width = inputTexture.get_width();
-    uint height = inputTexture.get_height();
-    
-    if (gid.x >= width || gid.y >= height) {
+    if (gid.x >= inputTexture.get_width() || gid.y >= inputTexture.get_height()) {
         return;
     }
-    
+
     half4 pixel = inputTexture.read(gid);
-    float rCode = float(pixel.r);
-    float gCode = float(pixel.g);
-    float bCode = float(pixel.b);
-    
-    float rLin = srgbEOTF(rCode);
-    float gLin = srgbEOTF(gCode);
-    float bLin = srgbEOTF(bCode);
-    
-    float refWhite = params.referenceWhiteNit;
-    float rNits = rLin * refWhite;
-    float gNits = gLin * refWhite;
-    float bNits = bLin * refWhite;
-    
-    float yLin = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
-    float yNits = yLin * refWhite;
-    
-    float rU = rNits / refWhite;
-    float gU = gNits / refWhite;
-    float bU = bNits / refWhite;
-    float yU = yNits / refWhite;
-    
-    uint edgeCount = params.binCount + 1;
-    
-    uint rBin = findBin(rU, edges, edgeCount);
-    if (rBin < params.binCount) {
-        atomic_fetch_add_explicit(&redHist[rBin], 1, memory_order_relaxed);
+
+    // sRGB EOTF → linear, where 1.0 is SDR white (= reference white), i.e. already u-space.
+    float rU = srgbEOTF(float(pixel.r));
+    float gU = srgbEOTF(float(pixel.g));
+    float bU = srgbEOTF(float(pixel.b));
+    float yU = 0.2126f * rU + 0.7152f * gU + 0.0722f * bU;
+
+    accumulatePixel(rU, gU, bU, yU, edges, params.binCount, redHist, greenHist, blueHist, lumaHist);
+}
+
+// HDR histogram kernel: the resident linear image (extended-linear Display P3, float, linear 1.0 =
+// reference white) — already u-space. Core Image decoded the file (PQ or HLG, any primaries) into
+// this, so no transfer function is applied here.
+kernel void calculateHistogramLinear(
+                                     texture2d<float, access::read> inputTexture [[texture(0)]],
+                                     constant float* edges [[buffer(0)]],
+                                     device atomic_uint* redHist [[buffer(1)]],
+                                     device atomic_uint* greenHist [[buffer(2)]],
+                                     device atomic_uint* blueHist [[buffer(3)]],
+                                     device atomic_uint* lumaHist [[buffer(4)]],
+                                     constant HistogramParams& params [[buffer(5)]],
+                                     uint2 gid [[thread_position_in_grid]]
+                                     ) {
+    if (gid.x >= inputTexture.get_width() || gid.y >= inputTexture.get_height()) {
+        return;
     }
-    
-    uint gBin = findBin(gU, edges, edgeCount);
-    if (gBin < params.binCount) {
-        atomic_fetch_add_explicit(&greenHist[gBin], 1, memory_order_relaxed);
+
+    float4 pixel = inputTexture.read(gid);
+    // Display P3 luminance weights (= Constants.displayP3LumaWeights).
+    float yU = 0.2290f * pixel.r + 0.6917f * pixel.g + 0.0793f * pixel.b;
+
+    accumulatePixel(pixel.r, pixel.g, pixel.b, yU, edges, params.binCount,
+                    redHist, greenHist, blueHist, lumaHist);
+}
+
+// Peak Display P3 luminance of the linear image (= the measured headroom, since linear 1.0 is
+// reference white). Finite non-negative floats order like their bit patterns, so an atomic max over
+// the bits is an exact float max; non-finite and non-positive values are skipped (the CPU twin,
+// HDRProcessor.peakLuminance, does the same).
+kernel void maxLuminanceLinear(
+                               texture2d<float, access::read> inputTexture [[texture(0)]],
+                               device atomic_uint* peakBits [[buffer(0)]],
+                               uint2 gid [[thread_position_in_grid]]
+                               ) {
+    if (gid.x >= inputTexture.get_width() || gid.y >= inputTexture.get_height()) {
+        return;
     }
-    
-    uint bBin = findBin(bU, edges, edgeCount);
-    if (bBin < params.binCount) {
-        atomic_fetch_add_explicit(&blueHist[bBin], 1, memory_order_relaxed);
-    }
-    
-    uint yBin = findBin(yU, edges, edgeCount);
-    if (yBin < params.binCount) {
-        atomic_fetch_add_explicit(&lumaHist[yBin], 1, memory_order_relaxed);
+    float4 pixel = inputTexture.read(gid);
+    float y = 0.2290f * pixel.r + 0.6917f * pixel.g + 0.0793f * pixel.b;
+    if (isfinite(y) && y > 0.0f) {
+        atomic_fetch_max_explicit(peakBits, as_type<uint>(y), memory_order_relaxed);
     }
 }
 
-// HDR histogram kernel (PQ input)
-// HDR path: convert 16-bit integer samples to float on the GPU
-kernel void calculateHistogramPQ(
-                                 texture2d<ushort, access::read> inputTexture [[texture(0)]],  // ushort input (16-bit), not half
-                                 constant float* edges [[buffer(0)]],
-                                 device atomic_uint* redHist [[buffer(1)]],
-                                 device atomic_uint* greenHist [[buffer(2)]],
-                                 device atomic_uint* blueHist [[buffer(3)]],
-                                 device atomic_uint* lumaHist [[buffer(4)]],
-                                 constant HistogramParams& params [[buffer(5)]],
-                                 uint2 gid [[thread_position_in_grid]]
-                                 ) {
-    uint width = inputTexture.get_width();
-    uint height = inputTexture.get_height();
-    
-    if (gid.x >= width || gid.y >= height) {
-        return;
-    }
-    
-    // Read 16-bit samples [0..65535] and normalize to [0..1]
-    ushort4 pixel = inputTexture.read(gid);
-    float rCode = float(pixel.r) / 65535.0f;
-    float gCode = float(pixel.g) / 65535.0f;
-    float bCode = float(pixel.b) / 65535.0f;
-    
-    // PQ EOTF -> linear light (relative), where 1.0 == 10,000 nits
-    float rLin = pqEOTF(rCode);
-    float gLin = pqEOTF(gCode);
-    float bLin = pqEOTF(bCode);
-    
-    // Convert to u-space (Y / WHITE)
-    float scale = 10000.0f / params.referenceWhiteNit;
-    float rU = rLin * scale;
-    float gU = gLin * scale;
-    float bU = bLin * scale;
-    
-    // Linear luma
-    float yLin = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
-    float yU = yLin * scale;
-    
-    // Map to histogram bin
-    uint edgeCount = params.binCount + 1;
-    
-    uint rBin = findBin(rU, edges, edgeCount);
-    if (rBin < params.binCount) {
-        atomic_fetch_add_explicit(&redHist[rBin], 1, memory_order_relaxed);
-    }
-    
-    uint gBin = findBin(gU, edges, edgeCount);
-    if (gBin < params.binCount) {
-        atomic_fetch_add_explicit(&greenHist[gBin], 1, memory_order_relaxed);
-    }
-    
-    uint bBin = findBin(bU, edges, edgeCount);
-    if (bBin < params.binCount) {
-        atomic_fetch_add_explicit(&blueHist[bBin], 1, memory_order_relaxed);
-    }
-    
-    uint yBin = findBin(yU, edges, edgeCount);
-    if (yBin < params.binCount) {
-        atomic_fetch_add_explicit(&lumaHist[yBin], 1, memory_order_relaxed);
-    }
-}
+struct LuminanceBinParams {
+    uint binCount;
+    float scale;   // bins per linear unit: binCount / range
+};
 
-// Kernel to compute headroom (max luminance)
-// Max-luminance kernel with 16-bit input
-kernel void calculateMaxLuminance(
-                                  texture2d<ushort, access::read> inputTexture [[texture(0)]],  // ushort input (16-bit)
-                                  device atomic_uint* maxNitsAtomic [[buffer(0)]],
-                                  uint2 gid [[thread_position_in_grid]]
-                                  ) {
-    uint width = inputTexture.get_width();
-    uint height = inputTexture.get_height();
-    
-    if (gid.x >= width || gid.y >= height) {
+// Uniform luminance histogram over [0, range] for the percentile CDF: bin = floor(y × scale),
+// negative → first bin, ≥ binCount → last bin (NaN → first). Same as HDRProcessor.luminanceBins.
+kernel void luminanceBinsLinear(
+                                texture2d<float, access::read> inputTexture [[texture(0)]],
+                                device atomic_uint* bins [[buffer(0)]],
+                                constant LuminanceBinParams& params [[buffer(1)]],
+                                uint2 gid [[thread_position_in_grid]]
+                                ) {
+    if (gid.x >= inputTexture.get_width() || gid.y >= inputTexture.get_height()) {
         return;
     }
-    
-    // Read 16-bit samples and normalize
-    ushort4 pixel = inputTexture.read(gid);
-    float rCode = float(pixel.r) / 65535.0f;
-    float gCode = float(pixel.g) / 65535.0f;
-    float bCode = float(pixel.b) / 65535.0f;
-    
-    // PQ EOTF -> linear light (relative), where 1.0 == 10,000 nits
-    float rLin = pqEOTF(rCode);
-    float gLin = pqEOTF(gCode);
-    float bLin = pqEOTF(bCode);
-    
-    // Linear luma (Rec.709 coefficients)
-    float yLin = 0.2126f * rLin + 0.7152f * gLin + 0.0722f * bLin;
-    
-    // Convert to absolute nits (1.0 linear == 10,000 nits)
-    float yNits = yLin * 10000.0f;
-    
-    // Convert to milli-nits (to preserve precision for atomic uint)
-    uint yMilliNits = uint(yNits * 1000.0f);
-    
-    // Atomic max (thread-safe)
-    atomic_fetch_max_explicit(&maxNitsAtomic[0], yMilliNits, memory_order_relaxed);
+    float4 pixel = inputTexture.read(gid);
+    float v = (0.2290f * pixel.r + 0.6917f * pixel.g + 0.0793f * pixel.b) * params.scale;
+    uint idx = v >= 1.0f ? (v < float(params.binCount) ? uint(v) : params.binCount - 1) : 0;
+    atomic_fetch_add_explicit(&bins[idx], 1, memory_order_relaxed);
 }

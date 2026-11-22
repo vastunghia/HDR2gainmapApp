@@ -476,7 +476,7 @@ class MainViewModel {
         }
     }
 
-    /// Pre-warms the caches (raw bytes, headroom, percentile CDF, preview) for the images adjacent
+    /// Pre-warms the caches (headroom, percentile CDF, preview) for the images adjacent
     /// to `image` — next first, then previous — on a low-priority, cancellable background task.
     /// Lets sequential navigation through the thumbnail bar feel near-instant without slowing down
     /// the user's work on the current image.

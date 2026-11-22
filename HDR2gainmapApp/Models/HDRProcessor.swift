@@ -497,7 +497,7 @@ class HDRProcessor {
         return (clipped, total, detailed)
     }
 
-    /// Warms the caches for `image` (raw bytes, headroom, percentile CDF, preview base/overlay)
+    /// Warms the caches for `image` (headroom, percentile CDF + HDR histogram, preview base/overlay)
     /// entirely off the main actor, so a later selection of this image is near-instant.
     /// Best-effort: returns silently on cancellation or failure.
     nonisolated func prewarm(params: PreviewParams) async {
@@ -955,8 +955,8 @@ class HDRProcessor {
         encode_ctx.render(hdrS, toBitmap: &hdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
         encode_ctx.render(sdrS, toBitmap: &sdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
 
-        // Display-P3 / D65 luminance weights.
-        let wr: Float = 0.2290, wg: Float = 0.6917, wb: Float = 0.0793
+        // Display-P3 / D65 luminance weights (shared with the headroom / CDF / histogram analysis).
+        let (wr, wg, wb) = Constants.displayP3LumaWeights
         func luma(_ b: [Float], _ i: Int) -> Float {
             return max(0, wr * b[i] + wg * b[i + 1] + wb * b[i + 2])
         }
@@ -1104,7 +1104,7 @@ class HDRProcessor {
     /// Immutable lookup table for percentile-derived headroom.
     /// Stores a cumulative distribution function (CDF) over `bins` buckets normalized to the image peak luminance.
     /// `@unchecked Sendable`: every stored property is an immutable `let`, so instances (built off the
-    /// main actor in `buildPercentileCDF`, then handed back and cached) are safe to share across actors.
+    /// main actor in `analyzeLinearImage`, then handed back and cached) are safe to share across actors.
     nonisolated final class PercentileCDFBox: NSObject, @unchecked Sendable {
         let maxNits: Float
         let cdf: [Int]   // inclusive prefix sums; last element equals the total sample count
@@ -1118,31 +1118,6 @@ class HDRProcessor {
         
         var totalCount: Int { cdf.last ?? 0 }
     }
-    
-    /// PQ EOTF lookup table (UInt16 code value → linear signal in [0..1], where 1 == 10,000 nits).
-    /// Building this once avoids expensive `pow()` calls inside the pixel loop.
-    nonisolated static let pqEotfLUT: [Float] = {
-        let m1: Float = 2610.0 / 16384.0
-        let m2: Float = 2523.0 / 32.0
-        let c1: Float = 3424.0 / 4096.0
-        let c2: Float = 2413.0 / 128.0
-        let c3: Float = 2392.0 / 128.0
-        
-        func pqEOTF(_ v: Float) -> Float {
-            let val = max(0, min(1, v))
-            let vp = pow(val, 1.0 / m2)
-            let num = max(vp - c1, 0)
-            let den = c2 - c3 * vp
-            return pow(num / den, 1.0 / m1)
-        }
-        
-        var lut = [Float](repeating: 0, count: 65536)
-        for i in 0..<65536 {
-            let code = Float(i) / 65535.0
-            lut[i] = pqEOTF(code)
-        }
-        return lut
-    }()
     
     /// Returns a cached percentile-derived source headroom if available.
     /// This is intentionally synchronous and lightweight so the histogram UI can call it while the user drags the slider.
@@ -1171,48 +1146,16 @@ class HDRProcessor {
             }
         }
         
-        // Ensure raw bytes are available and headroom is measured. This may touch the disk or
-        // run a Metal scan on a cold cache, so do it off the main actor.
-        let rawData: RawPixelData
-        let peakHeadroom: Float
-        do {
-            let prep = try await Task.detached(priority: .utility) { [self] () -> (RawPixelData, Float) in
-                let data = try getRawPixelData(url: url)
-                let head = getHeadroomForImage(url: url)
-                return (data, head)
-            }.value
-            rawData = prep.0
-            peakHeadroom = prep.1
-        } catch {
-            return false
+        // Built by the one-pass linear-image analysis (together with the headroom and the HDR
+        // histogram). Off the main actor: on a cold cache it loads and renders the image. Throws if
+        // the image can't be loaded → returns false.
+        let task = Task.detached(priority: .utility) { [self] () throws -> PercentileCDFBox in
+            try analyzeLinearImage(url: url).cdf
         }
-        let peakNits = max(0.001, peakHeadroom * Constants.referenceHDRwhiteNit)
-        
-        // The percentile CDF reader assumes 16-bit components (pixel stride = cpp × 2). Bail on
-        // anything else (mirrors calculatePeakLuminanceNits) so we never read past an 8-bit buffer.
-        guard rawData.bitsPerComponent == 16 else { return false }
 
-        let bytes = rawData.bytes
-        let width = rawData.width
-        let height = rawData.height
-        let cpp = rawData.componentsPerPixel
-        let isBigEndian = rawData.isBigEndian
-        let bins = 2048
-
-        let task = Task.detached(priority: .utility) { () throws -> PercentileCDFBox in
-            return Self.buildPercentileCDF(
-                bytes: bytes,
-                width: width,
-                height: height,
-                componentsPerPixel: cpp,
-                isBigEndian: isBigEndian,
-                peakNits: peakNits,
-                bins: bins
-            )
-        }
-        
+        // Registered before the first suspension point, so concurrent callers really share it.
         percentileCDFInFlight[key] = task
-        
+
         do {
             let box = try await task.value
             Self.percentileCDFCache.setObject(box, forKey: key)
@@ -1236,67 +1179,49 @@ class HDRProcessor {
         return cached
     }
     
-    private nonisolated static func buildPercentileCDF(
-        bytes: [UInt8],
-        width: Int,
-        height: Int,
-        componentsPerPixel: Int,
-        isBigEndian: Bool,
-        peakNits: Float,
-        bins: Int
-    ) -> PercentileCDFBox {
-        let bytesPerRow = width * componentsPerPixel * 2
-        let pixelStride = componentsPerPixel * 2
-        
-        let kr: Float = 0.2126
-        let kg: Float = 0.7152
-        let kb: Float = 0.0722
-        
+    /// Number of luminance buckets of the percentile CDF.
+    nonisolated static let percentileCDFBins = 2048
+
+    /// Upper end of the percentile CDF's range, in linear units (1.0 = reference white): the peak
+    /// luminance, floored at 0.001 nit so a black image still gets a valid, non-zero range.
+    nonisolated static func percentileCDFRange(forPeak peak: Float) -> Float {
+        max(peak, 0.001 / Constants.referenceHDRwhiteNit)
+    }
+
+    /// Uniform luminance histogram over [0, `range`] (linear units) in `bins` buckets — the CPU
+    /// twin of the Metal `luminanceBinsLinear` kernel (same binning and clamping).
+    nonisolated static func luminanceBins(pixels: UnsafePointer<Float>, width: Int, height: Int,
+                                          rowStride: Int, range: Float, bins: Int) -> [Int] {
+        let (wr, wg, wb) = Constants.displayP3LumaWeights
+        let scale = Float(bins) / range
+        let top = Float(bins)
         var histogram = [Int](repeating: 0, count: bins)
-        let scale = Float(bins) / max(0.001, peakNits)
-        
-        for y in 0..<height {
-            let rowStart = y * bytesPerRow
-            for x in 0..<width {
-                let pixelStart = rowStart + x * pixelStride
-                
-                let r16: UInt16
-                let g16: UInt16
-                let b16: UInt16
-                
-                if isBigEndian {
-                    r16 = (UInt16(bytes[pixelStart + 0]) << 8) | UInt16(bytes[pixelStart + 1])
-                    g16 = (UInt16(bytes[pixelStart + 2]) << 8) | UInt16(bytes[pixelStart + 3])
-                    b16 = (UInt16(bytes[pixelStart + 4]) << 8) | UInt16(bytes[pixelStart + 5])
-                } else {
-                    r16 = UInt16(bytes[pixelStart + 0]) | (UInt16(bytes[pixelStart + 1]) << 8)
-                    g16 = UInt16(bytes[pixelStart + 2]) | (UInt16(bytes[pixelStart + 3]) << 8)
-                    b16 = UInt16(bytes[pixelStart + 4]) | (UInt16(bytes[pixelStart + 5]) << 8)
+        histogram.withUnsafeMutableBufferPointer { hist in
+            for y in 0..<height {
+                let row = pixels + y * rowStride
+                for x in 0..<width {
+                    let p = row + x * 4
+                    let v = (wr * p[0] + wg * p[1] + wb * p[2]) * scale
+                    // Negative → first bin, ≥ bins → last bin (as before); written so that NaN / ±inf
+                    // can't trap the Int conversion.
+                    let idx = v >= 1 ? (v < top ? Int(v) : bins - 1) : 0
+                    hist[idx] += 1
                 }
-                
-                let rLin = pqEotfLUT[Int(r16)]
-                let gLin = pqEotfLUT[Int(g16)]
-                let bLin = pqEotfLUT[Int(b16)]
-                
-                let yLin = kr * rLin + kg * gLin + kb * bLin
-                let yNits = yLin * 10000.0
-                
-                var idx = Int(yNits * scale)
-                if idx < 0 { idx = 0 }
-                if idx >= bins { idx = bins - 1 }
-                histogram[idx] += 1
             }
         }
-        
-        // Build CDF (prefix sums).
-        var cdf = [Int](repeating: 0, count: bins)
+        return histogram
+    }
+
+    /// Prefix sums of the luminance buckets → the percentile lookup table.
+    private nonisolated static func makePercentileCDF(luminanceBins: [Int], range: Float) -> PercentileCDFBox {
+        var cdf = [Int](repeating: 0, count: luminanceBins.count)
         var running = 0
-        for i in 0..<bins {
-            running += histogram[i]
+        for i in luminanceBins.indices {
+            running += luminanceBins[i]
             cdf[i] = running
         }
-        
-        return PercentileCDFBox(maxNits: peakNits, cdf: cdf, bins: bins)
+        return PercentileCDFBox(maxNits: range * Constants.referenceHDRwhiteNit,
+                                cdf: cdf, bins: luminanceBins.count)
     }
     
     private nonisolated static func headroomFromCDF(_ box: PercentileCDFBox, percentile: Float) -> Float {
@@ -1565,166 +1490,35 @@ class HDRProcessor {
 
     // MARK: - Headroom
 
-    /// Computes raw headroom (no cache; prefer getHeadroomForImage() instead).
-    /// Use Metal for a 10–100× speedup (when available).
-    nonisolated func computeMeasuredHeadroomRaw(url: URL) throws -> Float {
-        
-        // print("🔍 [computeMeasuredHeadroomRaw] Called for: \(url.lastPathComponent)")
-        
-        // Fetch raw pixel data from cache
-        let rawData = try getRawPixelData(url: url)
-        
-        // print("    RawData obtained: \(rawData.width)×\(rawData.height), \(rawData.bytes.count) bytes")
-        
-        // Try Metal first (per-worker calculator inside a batch, shared otherwise).
-        let peakNits: Float
-
-        if let metalCalc = searchHistogram,
-           let metalPeak = metalCalc.calculatePeakLuminance(
-            fromBytes: rawData.bytes,
-            width: rawData.width,
-            height: rawData.height,
-            bitsPerComponent: rawData.bitsPerComponent,
-            componentsPerPixel: rawData.componentsPerPixel,
-            isBigEndian: rawData.isBigEndian
-           ) {
-            peakNits = metalPeak
-        } else {
-            // Fallback CPU
-            // print("   ℹ️ Metal not available for headroom, using CPU...")
-            peakNits = calculatePeakLuminanceNits(
-                fromBytes: rawData.bytes,
-                width: rawData.width,
-                height: rawData.height,
-                bitsPerComponent: rawData.bitsPerComponent,
-                componentsPerPixel: rawData.componentsPerPixel,
-                isBigEndian: rawData.isBigEndian
-            )
+    /// Maximum Display-P3 luminance over the linear image (linear 1.0 = reference white, so this is
+    /// the measured headroom as is). CPU twin of the Metal `maxLuminanceLinear` kernel: non-finite
+    /// values are skipped, so the result is always finite and ≥ 0.
+    nonisolated static func peakLuminance(pixels: UnsafePointer<Float>, width: Int,
+                                          height: Int, rowStride: Int) -> Float {
+        let (wr, wg, wb) = Constants.displayP3LumaWeights
+        var peak: Float = 0
+        for y in 0..<height {
+            let row = pixels + y * rowStride
+            for x in 0..<width {
+                let p = row + x * 4
+                let luminance = wr * p[0] + wg * p[1] + wb * p[2]
+                if luminance > peak, luminance.isFinite { peak = luminance }   // NaN never compares greater
+            }
         }
-        
-        // Headroom relativo a Constants.referenceHDRwhiteNit
-        let headroom = peakNits / Constants.referenceHDRwhiteNit
-        
-        return headroom.isFinite ? headroom : 1.0
+        return peak
     }
     
-    /// Helper: compute headroom from a URL with caching.
+    /// Measured headroom of `url` (cached): the peak luminance of its linear image, relative to SDR
+    /// reference white. See `analyzeLinearImage`. Returns 1.0 (uncached) if the image can't be read.
     nonisolated func getHeadroomForImage(url: URL) -> Float {
-        let key = url as NSURL
-
-        // Cache hit?
-        if let cached = Self.peakLuminanceCache.object(forKey: key) {
-//            print("📦 [Headroom] Cache HIT: \(url.lastPathComponent) = \(cached.floatValue)")
+        if let cached = Self.peakLuminanceCache.object(forKey: url as NSURL) {
             return cached.floatValue
         }
-
-        // print("⚠️  [Headroom] Cache MISS: \(url.lastPathComponent)")
-
-        // print("   ❌ Peak luminance cache MISS, calculating...")
-
         do {
-            let headroom = try computeMeasuredHeadroomRaw(url: url)
-
-            if headroom <= 1.0 {
-                // print("❌ [Headroom] WARNING: Computed headroom = \(headroom) ≤ 1.0!")
-            } else {
-                // print("✅ [Headroom] Computed headroom = \(headroom)")
-            }
-
-            Self.peakLuminanceCache.setObject(NSNumber(value: headroom), forKey: key)
-            // print("    Cached headroom for: \(url.lastPathComponent)")
-
-            return headroom
+            return try analyzeLinearImage(url: url).headroom
         } catch {
-            // print("❌ [Headroom] Computation FAILED: \(error)")
             return 1.0
         }
-    }
-    
-    /// Computes absolute peak luminance (nits) from raw pixel data.
-    nonisolated private func calculatePeakLuminanceNits(
-        fromBytes bytes: [UInt8],
-        width: Int,
-        height: Int,
-        bitsPerComponent: Int,
-        componentsPerPixel: Int,
-        isBigEndian: Bool
-    ) -> Float {
-        
-        guard bitsPerComponent == 16 else {
-            // print("⚠️ Only 16-bit supported for headroom calculation")
-            return Constants.referenceHDRwhiteNit  // Fallback a Constants.referenceHDRwhiteNit
-        }
-        
-        let bytesPerRow = width * componentsPerPixel * 2  // 16-bit = 2 bytes
-        let pixelStride = componentsPerPixel * 2
-        
-        var maxLuminanceNits: Float = 0.0
-        
-        // Costanti PQ (SMPTE ST 2084)
-        let m1: Float = 2610.0 / 16384.0
-        let m2: Float = 2523.0 / 32.0
-        let c1: Float = 3424.0 / 4096.0
-        let c2: Float = 2413.0 / 128.0
-        let c3: Float = 2392.0 / 128.0
-        
-        // Rec.709 luma coefficients.
-        let kr: Float = 0.2126
-        let kg: Float = 0.7152
-        let kb: Float = 0.0722
-        
-        // Scan all pixels.
-        for y in 0..<height {
-            let rowStart = y * bytesPerRow
-            
-            for x in 0..<width {
-                let pixelStart = rowStart + x * pixelStride
-                
-                // Leggi RGB 16-bit PQ code values [0..65535]
-                let r16: UInt16
-                let g16: UInt16
-                let b16: UInt16
-                
-                if isBigEndian {
-                    r16 = (UInt16(bytes[pixelStart + 0]) << 8) | UInt16(bytes[pixelStart + 1])
-                    g16 = (UInt16(bytes[pixelStart + 2]) << 8) | UInt16(bytes[pixelStart + 3])
-                    b16 = (UInt16(bytes[pixelStart + 4]) << 8) | UInt16(bytes[pixelStart + 5])
-                } else {
-                    r16 = UInt16(bytes[pixelStart + 0]) | (UInt16(bytes[pixelStart + 1]) << 8)
-                    g16 = UInt16(bytes[pixelStart + 2]) | (UInt16(bytes[pixelStart + 3]) << 8)
-                    b16 = UInt16(bytes[pixelStart + 4]) | (UInt16(bytes[pixelStart + 5]) << 8)
-                }
-                
-                // Normalizza a [0..1]
-                let rCode = Float(r16) / 65535.0
-                let gCode = Float(g16) / 65535.0
-                let bCode = Float(b16) / 65535.0
-                
-                // PQ EOTF → linear [0..1] where 1 = 10k nit
-                func pqEOTF(_ v: Float) -> Float {
-                    let val = max(0, min(1, v))
-                    let vp = pow(val, 1.0 / m2)
-                    let num = max(vp - c1, 0)
-                    let den = c2 - c3 * vp
-                    return pow(num / den, 1.0 / m1)
-                }
-                
-                let rLin = pqEOTF(rCode)
-                let gLin = pqEOTF(gCode)
-                let bLin = pqEOTF(bCode)
-                
-                // Luma lineare (Rec.709)
-                let yLin = kr * rLin + kg * gLin + kb * bLin
-                
-                // Convert to absolute nits (linear values are normalized to 10,000 nits).
-                let yNits = yLin * 10000.0
-                
-                // Track max
-                maxLuminanceNits = max(maxLuminanceNits, yNits)
-            }
-        }
-        
-        return maxLuminanceNits.isFinite ? maxLuminanceNits : Constants.referenceHDRwhiteNit
     }
     
     // MARK: - Overlay + count
@@ -2212,9 +2006,10 @@ class HDRProcessor {
         return histogram
     }
 
-    // MARK: - Raw Data Structures
-    
-    /// Separate cache for raw pixel data (used for histograms).
+    // MARK: - Source decode cache
+
+    /// Cache of each input's source decode (ImageIO `CGImage` + properties): re-linearizes after
+    /// `hdrCache` evicts the linear image without touching the disk, and backs metadata reads.
     nonisolated(unsafe) private static let rawDataCache = NSCache<NSURL, RawPixelData>()
     
     // MARK: - Public Cache Access
@@ -2226,7 +2021,7 @@ class HDRProcessor {
         return Self.rawDataCache.object(forKey: key)
     }
 
-    /// Whether the image's pixel data is currently resident in memory (raw bytes or linear CIImage).
+    /// Whether the image's pixel data is currently resident in memory (source decode or linear CIImage).
     /// Used by the UI to flag thumbnails that will load quickly (no disk read).
     nonisolated func isLoaded(url: URL) -> Bool {
         let key = url as NSURL
@@ -2235,8 +2030,8 @@ class HDRProcessor {
     
     // MARK: - HDR Loading with Raw Data Cache
     
-    /// Load HDR once: read raw bytes from disk only once, then cache both the bytes and the CIImage.
-    /// Throws ProcessingError.invalidColorSpace if the file isn't the expected HDR CS.
+    /// Load HDR once: decode the file once, then cache both the source decode and the materialized
+    /// linear CIImage. Throws ProcessingError.invalidColorSpace if the file isn't the expected HDR CS.
     nonisolated private func loadHDR(url: URL) throws -> CIImage {
         let key = url as NSURL
         
@@ -2270,72 +2065,31 @@ class HDRProcessor {
         // No cache: read from disk (ONLY ONCE per session ideally, but cache eviction forces re-reads)
         // print("📂 [loadHDR] Reading from DISK: \(url.lastPathComponent)")
         
-        // 1) Load raw bytes and the original CGImage.
+        // 1) Open the source (ImageIO decodes lazily, when Core Image first reads the pixels).
         guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
             throw ProcessingError.cannotReadHDR
         }
-        
-        let width = cgImage.width
-        let height = cgImage.height
-        let bitsPerComponent = cgImage.bitsPerComponent
-        let bitsPerPixel = cgImage.bitsPerPixel
-        let componentsPerPixel = bitsPerPixel / bitsPerComponent
         let properties = (CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any]) ?? [:]
-        
-        // print("📂 [loadHDR] Image loaded:")
-        // print("   File: \(url.lastPathComponent)")
-        // print("   Size: \(width)×\(height)")
-        // print("   Bits/comp: \(bitsPerComponent)")
-        // print("   Bits/pixel: \(bitsPerPixel)")
-        // print("   Components: \(componentsPerPixel)")
-        // print("   Color space: \(cgImage.colorSpace?.name as? String ?? "nil")")
-        
-        // Validation
-        if componentsPerPixel < 3 {
-            // print("   ⚠️ WARNING: Less than 3 components! Might be grayscale")
-        }
-        
-        if bitsPerComponent != 16 {
-            // print("   ⚠️ WARNING: Not 16-bit! Might not be true HDR")
-        }
-        
-        let byteOrderInfo = cgImage.byteOrderInfo
-        let isBigEndian = (byteOrderInfo == .order16Big || byteOrderInfo == .orderDefault)
-        
-        guard let dataProvider = cgImage.dataProvider,
-              let data = dataProvider.data else {
-            throw ProcessingError.cannotReadHDR
-        }
-        
-        // Copy raw bytes.
-        let dataLength = CFDataGetLength(data)
-        let bytePtr = CFDataGetBytePtr(data)!
-        let bytes = Array(UnsafeBufferPointer(start: bytePtr, count: dataLength))
-        
-        // Also load image properties (for metadata; avoids re-reading).
-        
-        // 2) Build raw data (for fast histograms).
+
+        // 2) Source decode + metadata. The encoded pixel bytes themselves are no longer copied out:
+        //    every measurement reads the linearized image instead (see `analyzeLinearImage`).
         let rawData = RawPixelData(
-            width: width,
-            height: height,
-            bitsPerComponent: bitsPerComponent,
-            componentsPerPixel: componentsPerPixel,
-            isBigEndian: isBigEndian,
-            bytes: bytes,
+            width: cgImage.width,
+            height: cgImage.height,
+            bitsPerComponent: cgImage.bitsPerComponent,
             cgImage: cgImage,
             properties: properties
         )
 
-        // 3) Create and cache a CIImage from raw data (no additional I/O). This also VALIDATES the
-        //    color space and throws for non-HDR inputs. Do it BEFORE caching the raw bytes so an
-        //    invalid (e.g. 8-bit / non-PQ) image never lands in rawDataCache, where the
-        //    16-bit-assuming readers (percentile CDF, headroom, histograms) would later crash on it.
+        // 3) Linearize + cache (no additional I/O). This also VALIDATES the color space and throws
+        //    for non-HDR inputs — before anything is cached, so an invalid image never lands in
+        //    either cache.
         let residentCI = try createCIImageFromRawData(rawData, key: key)
 
-        let byteCost = dataLength / (1024 * 1024)  // MB
-        // Self.rawDataCache.totalCostLimit = 1024  // Max 1GB
-        Self.rawDataCache.setObject(rawData, forKey: key, cost: byteCost)
+        // Cost = the decoded source size, in MB (an estimate: ImageIO owns that buffer).
+        let decodedMB = max(1, cgImage.bytesPerRow * cgImage.height / (1024 * 1024))
+        Self.rawDataCache.setObject(rawData, forKey: key, cost: decodedMB)
 
         return residentCI
     }
@@ -2352,7 +2106,13 @@ class HDRProcessor {
             throw ProcessingError.invalidColorSpace(cs_name(fileCI.colorSpace))
         }
         
-        // Materialize in linear P3 (per-worker context inside a batch, shared otherwise).
+        // Linear P3 image (per-worker context inside a batch, shared otherwise). NOTE: this
+        // `createCGImage` overload is *deferred* — it returns at once and renders when the pixels are
+        // first needed; Core Image then keeps its own GPU copy. Deliberately kept that way: forcing
+        // it (`deferred: false`) puts 16 B/px of floats in RAM that Core Image re-uploads on every
+        // render (measured: a 22 MP preview + stats went from ~1.5 s to ~14 s). Reading pixels on the
+        // CPU from this CGImage would re-render each time, so the measurements render it themselves
+        // (see `analyzeLinearImage`).
         guard let residentCG = searchCtx.createCGImage(
             fileCI,
             from: fileCI.extent,
@@ -2372,122 +2132,91 @@ class HDRProcessor {
         return residentCI
     }
     
-    // MARK: - Histogram Generation
-    
-    /// Fetch raw pixel data from cache (for histogram calculation).
-    nonisolated private func getRawPixelData(url: URL) throws -> RawPixelData {
-        let key = url as NSURL
-        
-        // Cache hit?
-        if let cached = Self.rawDataCache.object(forKey: key) {
-            // print("📦 [getRawPixelData] Cache HIT: \(url.lastPathComponent)")
-            return cached
-        }
-        
-        // print("⚠️  [getRawPixelData] Cache MISS, calling loadHDR...")
-        
-        // Fallback: load now
-        _ = try loadHDR(url: url)
-        
-        guard let cached = Self.rawDataCache.object(forKey: key) else {
-            // print("❌ [getRawPixelData] STILL not in cache after loadHDR!")
-            throw ProcessingError.cannotReadHDR
-        }
-        
-        // print("✅ [getRawPixelData] Now in cache after loadHDR")
-        return cached
+    // MARK: - Linear-image analysis (single source for every HDR measurement)
+
+    /// What the one-pass analysis measures on an image's linear pixels.
+    nonisolated struct LinearImageAnalysis: Sendable {
+        let headroom: Float                                  // peak luminance (1.0 = reference white)
+        let cdf: PercentileCDFBox                            // percentile lookup table
+        let histogram: HistogramCalculator.HistogramResult   // HDR-input histogram
     }
-    
-    /// Computes histogram for the HDR input (with caching).
-    /// Use Metal for a 10–50× speedup (when available).
-    @concurrent nonisolated func histogramForHDRInput(url: URL) async throws -> HistogramCalculator.HistogramResult {
-        
-        let cacheKey = NSString(string: "\(url.absoluteString)|hdr")
-        let file = url.lastPathComponent
 
-        // print("📊 [histogramForHDRInput] Called for: \(url.lastPathComponent)")
+    /// Measures `url` once — measured headroom, percentile CDF and HDR-input histogram — from a
+    /// single render of its linear image, and fills the three caches those feed. The linear image is
+    /// exactly what `CIToneMapHeadroom` consumes (extended-linear Display P3, 1.0 = reference
+    /// white), decoded by Core Image from whatever the file carries, so the measurements hold for PQ
+    /// and HLG inputs and any source primaries. (They used to scan the file's encoded samples and
+    /// always decode them as PQ: an HLG input measured ~10× too bright.)
+    /// GPU when Metal is available (per-worker calculator inside a batch); CPU otherwise.
+    @discardableResult
+    nonisolated private func analyzeLinearImage(url: URL) throws -> LinearImageAnalysis {
+        let image = try loadHDR(url: url)
+        let bins = Self.percentileCDFBins
 
-        // Cache hit?
-        if let cached = Self.HistogramCache.object(forKey: cacheKey) {
-            // print("   ⚡ Cache HIT")
-            return cached
-        }
-
-        let tHDR = Prof.tic()
-        defer { Prof.toc("histHDR.compute(miss) [\(file)]", tHDR) }
-        
-        // print("   ❌ Cache MISS - calculating...")
-        
-        // Fetch raw data from cache.
-        let rawData = try getRawPixelData(url: url)
-        
-        // print("   📦 Raw data loaded:")
-        // print("      Size: \(rawData.width)×\(rawData.height)")
-        // print("      Bytes: \(rawData.bytes.count)")
-        // print("      Bits/comp: \(rawData.bitsPerComponent)")
-        
-        // Try Metal first.
-        let histogram: HistogramCalculator.HistogramResult
-        
-        if let metalCalc = metalHistogram {
-            // print("   🚀 Trying METAL for HDR histogram...")
-            if let result = metalCalc.calculateHistogramFromHDR(
-                fromBytes: rawData.bytes,
-                width: rawData.width,
-                height: rawData.height,
-                bitsPerComponent: rawData.bitsPerComponent,
-                componentsPerPixel: rawData.componentsPerPixel,
-                isBigEndian: rawData.isBigEndian,
-                smoothWindow: 11
-            ) {
-                // print("   ✅ Metal succeeded")
-                
-                // Validation: ensure the histogram is not empty.
-                let totalCounts = result.lumaCounts.reduce(0, +)
-                // print("   📊 Total luma counts: \(totalCounts)")
-                
-                if totalCounts == 0 {
-                    // print("   ⚠️ WARNING: Histogram is empty (all counts = 0)!")
-                }
-                
-                histogram = result
-            } else {
-                // print("   ⚠️ Metal FAILED, falling back to CPU...")
-                guard let cpuResult = HistogramCalculator.calculateHistogram(
-                    fromBytes: rawData.bytes,
-                    width: rawData.width,
-                    height: rawData.height,
-                    bitsPerComponent: rawData.bitsPerComponent,
-                    componentsPerPixel: rawData.componentsPerPixel,
-                    isBigEndian: rawData.isBigEndian,
-                    smoothWindow: 11
-                ) else {
-                    // print("   ❌ CPU also FAILED!")
+        let measured: MetalHistogramCalculator.LinearMeasurements
+        if let metal = searchHistogram,
+           let m = metal.measureLinear(ciImage: image, context: searchCtx, colorSpace: linear_p3,
+                                       luminanceBinCount: bins,
+                                       luminanceRange: Self.percentileCDFRange(forPeak:)) {
+            measured = m
+        } else {
+            measured = try withLinearPixels(of: image) { pixels, width, height, rowStride in
+                let peak = Self.peakLuminance(pixels: pixels, width: width, height: height, rowStride: rowStride)
+                let range = Self.percentileCDFRange(forPeak: peak)
+                guard let histogram = HistogramCalculator.calculateHistogramFromLinear(
+                    pixels: pixels, width: width, height: height, rowStride: rowStride) else {
                     throw ProcessingError.histogramCalculationFailed
                 }
-                // print("   ✅ CPU succeeded")
-                histogram = cpuResult
+                return MetalHistogramCalculator.LinearMeasurements(
+                    peakLuminance: peak,
+                    histogram: histogram,
+                    luminanceBins: Self.luminanceBins(pixels: pixels, width: width, height: height,
+                                                      rowStride: rowStride, range: range, bins: bins),
+                    luminanceRange: range)
             }
-        } else {
-            // print("   ℹ️ Metal not available, using CPU...")
-            guard let cpuResult = HistogramCalculator.calculateHistogram(
-                fromBytes: rawData.bytes,
-                width: rawData.width,
-                height: rawData.height,
-                bitsPerComponent: rawData.bitsPerComponent,
-                componentsPerPixel: rawData.componentsPerPixel,
-                isBigEndian: rawData.isBigEndian,
-                smoothWindow: 11
-            ) else {
-                throw ProcessingError.histogramCalculationFailed
-            }
-            histogram = cpuResult
         }
-        
-        // Cache result
-        Self.HistogramCache.setObject(histogram, forKey: cacheKey)
-        
-        return histogram
+
+        let analysis = LinearImageAnalysis(
+            headroom: measured.peakLuminance,
+            cdf: Self.makePercentileCDF(luminanceBins: measured.luminanceBins, range: measured.luminanceRange),
+            histogram: measured.histogram)
+        let key = url as NSURL
+        Self.peakLuminanceCache.setObject(NSNumber(value: analysis.headroom), forKey: key)
+        Self.percentileCDFCache.setObject(analysis.cdf, forKey: key)
+        Self.HistogramCache.setObject(analysis.histogram, forKey: Self.hdrHistogramKey(url))
+        return analysis
+    }
+
+    /// CPU fallback only: renders `image` (linear P3, RGBA Float32) into a temporary buffer and runs
+    /// `body` over it. `rowStride` is in floats. The pointer is valid only inside `body`.
+    nonisolated private func withLinearPixels<T>(
+        of image: CIImage,
+        _ body: (_ pixels: UnsafePointer<Float>, _ width: Int, _ height: Int, _ rowStride: Int) throws -> T
+    ) throws -> T {
+        let width = Int(image.extent.width), height = Int(image.extent.height)
+        guard width > 0, height > 0 else { throw ProcessingError.cannotReadHDR }
+        var buffer = [Float](repeating: 0, count: width * height * 4)
+        searchCtx.render(image, toBitmap: &buffer, rowBytes: width * 4 * MemoryLayout<Float>.stride,
+                         bounds: image.extent, format: .RGBAf, colorSpace: linear_p3)
+        return try buffer.withUnsafeBufferPointer { pixels in
+            try body(pixels.baseAddress!, width, height, width * 4)
+        }
+    }
+
+    // MARK: - Histogram Generation
+
+    nonisolated private static func hdrHistogramKey(_ url: URL) -> NSString {
+        NSString(string: "\(url.absoluteString)|hdr")
+    }
+
+    /// Computes the histogram for the HDR input (cached), via the one-pass linear-image analysis.
+    @concurrent nonisolated func histogramForHDRInput(url: URL) async throws -> HistogramCalculator.HistogramResult {
+        if let cached = Self.HistogramCache.object(forKey: Self.hdrHistogramKey(url)) {
+            return cached
+        }
+        let tHDR = Prof.tic()
+        defer { Prof.toc("histHDR.compute(miss) [\(url.lastPathComponent)]", tHDR) }
+        return try analyzeLinearImage(url: url).histogram
     }
     
     // Histogram cache. Thread-safe NSCache, accessed from the off-main histogram path.

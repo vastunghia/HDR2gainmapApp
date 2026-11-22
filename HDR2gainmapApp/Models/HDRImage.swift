@@ -44,7 +44,7 @@ class HDRImage: Identifiable {
     }
     
     /// Loads image metadata with a global cache (avoids re-reading from disk after the first extraction).
-    /// Prefers raw pixel bytes already cached by HDRProcessor.loadHDR(), when available.
+    /// Prefers the source decode already cached by HDRProcessor.loadHDR(), when available.
     @MainActor
     func loadMetadata() async -> ImageMetadata? {
         // print("📋 [HDRImage.loadMetadata] Called for: \(fileName)")
@@ -65,7 +65,7 @@ class HDRImage: Identifiable {
         isLoadingMetadata = true
         // print("   ❌ Cache MISS - extracting metadata...")
         
-        // 3) First, try to reuse raw pixel bytes already cached by HDRProcessor...
+        // 3) First, try to reuse the source decode already cached by HDRProcessor...
         //    (e.g., if the image was already loaded for preview/histograms).
         let metadata: ImageMetadata?
         

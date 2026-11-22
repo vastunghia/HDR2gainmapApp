@@ -4,16 +4,18 @@ import MetalKit
 import CoreImage
 import Accelerate  // Optional: used for vImage conversions (experiments)
 
-/// Computes SDR/HDR histograms and peak luminance using Metal compute shaders.
+/// Computes the SDR histogram and the HDR-input measurements (histogram, peak luminance, percentile
+/// luminance buckets) using Metal compute shaders.
 /// Not actor-isolated: its public compute methods are serialized with an internal `NSLock`,
 /// so a single instance can be shared safely across the main actor and background tasks.
 nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
     
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
-    private let histogramPipeline: MTLComputePipelineState
-    private let histogramPQPipeline: MTLComputePipelineState
-    private let maxLuminancePipeline: MTLComputePipelineState  // Nuovo
+    private let histogramPipeline: MTLComputePipelineState        // SDR: display-referred P3
+    private let histogramLinearPipeline: MTLComputePipelineState  // HDR: extended-linear P3
+    private let maxLuminancePipeline: MTLComputePipelineState     // HDR: peak luminance
+    private let luminanceBinsPipeline: MTLComputePipelineState    // HDR: percentile buckets
     
     // Reusable buffers
     private var edgesBuffer: MTLBuffer?
@@ -25,58 +27,27 @@ nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
     
     init?() {
         guard let device = MTLCreateSystemDefaultDevice(),
-              let commandQueue = device.makeCommandQueue() else {
-            // print("❌ Metal not available")
+              let commandQueue = device.makeCommandQueue(),
+              // The default Metal library (Xcode builds HistogramShaders.metal automatically).
+              let library = device.makeDefaultLibrary(),
+              let histogramFunction = library.makeFunction(name: "calculateHistogram"),
+              let histogramLinearFunction = library.makeFunction(name: "calculateHistogramLinear"),
+              let maxLuminanceFunction = library.makeFunction(name: "maxLuminanceLinear"),
+              let luminanceBinsFunction = library.makeFunction(name: "luminanceBinsLinear") else {
             return nil
         }
         
         self.device = device
         self.commandQueue = commandQueue
         
-        // Load the default Metal library (Xcode builds .metal files automatically).
-        guard let library = device.makeDefaultLibrary() else {
-            // print("❌ Failed to create default Metal library")
-            return nil
-        }
-        
-        // print("✅ Metal library loaded from .metal file")
-        
-        guard let histogramFunction = library.makeFunction(name: "calculateHistogram") else {
-            // print("❌ Failed to create 'calculateHistogram' function")
-            // print("   Available functions: \(library.functionNames)")
-            return nil
-        }
-        
-        // print("✅ Metal 'calculateHistogram' function created")
-        
-        guard let histogramPQFunction = library.makeFunction(name: "calculateHistogramPQ") else {
-            // print("❌ Failed to create 'calculateHistogramPQ' function")
-            // print("   Available functions: \(library.functionNames)")
-            return nil
-        }
-        
-        // print("✅ Metal 'calculateHistogramPQ' function created")
-        
-        guard let maxLuminanceFunction = library.makeFunction(name: "calculateMaxLuminance") else {
-            // print("❌ Failed to create 'calculateMaxLuminance' function")
-            // print("   Available functions: \(library.functionNames)")
-            return nil
-        }
-        
-        // print("✅ Metal 'calculateMaxLuminance' function created")
-        
-        
         do {
             self.histogramPipeline = try device.makeComputePipelineState(function: histogramFunction)
-            self.histogramPQPipeline = try device.makeComputePipelineState(function: histogramPQFunction)
+            self.histogramLinearPipeline = try device.makeComputePipelineState(function: histogramLinearFunction)
             self.maxLuminancePipeline = try device.makeComputePipelineState(function: maxLuminanceFunction)
-            // print("✅ Metal compute pipelines created (SDR + HDR + Headroom)")
+            self.luminanceBinsPipeline = try device.makeComputePipelineState(function: luminanceBinsFunction)
         } catch {
-            // print("❌ Failed to create Metal pipeline: \(error)")
             return nil
         }
-        
-        // print("✅ Metal histogram calculator initialized")
     }
     
     /// Computes an SDR histogram using Metal (typically much faster than the CPU implementation).
@@ -88,366 +59,200 @@ nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        // let startTime = CFAbsoluteTimeGetCurrent()
-
-        let width = Int(ciImage.extent.width)
-        let height = Int(ciImage.extent.height)
-        
-        guard width > 0, height > 0 else {
-            // print("❌ Invalid image dimensions")
+        guard Int(ciImage.extent.width) > 0, Int(ciImage.extent.height) > 0,
+              let texture = renderToMetalTexture(ciImage: ciImage, context: context) else {
             return nil
         }
-        
-        // 1) Prepare bin edges (same as HistogramCalculator)
+        return runHistogram(pipeline: histogramPipeline, texture: texture)
+    }
+
+    /// Results of `measureLinear` (the CPU fallback in `HDRProcessor` produces the same).
+    struct LinearMeasurements: Sendable {
+        let peakLuminance: Float          // max Display-P3 luminance, 1.0 = reference white; finite, ≥ 0
+        let histogram: HistogramCalculator.HistogramResult
+        let luminanceBins: [Int]          // uniform luminance histogram over [0, luminanceRange]
+        let luminanceRange: Float
+    }
+
+    /// Measures the linear HDR image on the GPU from ONE render of it: the HDR-input histogram, the
+    /// peak luminance, then a `luminanceBinCount`-bucket luminance histogram over
+    /// [0, `luminanceRange(peak)`] (for the percentile CDF). Only these small results come back to
+    /// the CPU. `ciImage` must be extended-linear (1.0 = reference white); it is rendered into a
+    /// half-float texture in `colorSpace` (≈ 0.05 % precision — finer than any of the bins).
+    func measureLinear(
+        ciImage: CIImage,
+        context: CIContext,
+        colorSpace: CGColorSpace,
+        luminanceBinCount: Int,
+        luminanceRange: (_ peak: Float) -> Float
+    ) -> LinearMeasurements? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let width = Int(ciImage.extent.width), height = Int(ciImage.extent.height)
+        guard width > 0, height > 0, luminanceBinCount > 0 else { return nil }
+
+        // 1) The one render. Waiting on the task guarantees the texture is fully written before our
+        //    kernels (on our own command queue) read it.
+        let tRender = Prof.tic()
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .rgba16Float,
+            width: width,
+            height: height,
+            mipmapped: false
+        )
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        let destination = CIRenderDestination(mtlTexture: texture, commandBuffer: nil)
+        destination.colorSpace = colorSpace
+        do {
+            _ = try context.startTask(toRender: ciImage, from: ciImage.extent,
+                                      to: destination, at: .zero).waitUntilCompleted()
+        } catch {
+            return nil
+        }
+        Prof.toc("metal.linearRender [\(width)×\(height)]", tRender)
+
+        // 2) HDR histogram, 3) peak, 4) percentile buckets over [0, range(peak)].
+        guard let histogram = runHistogram(pipeline: histogramLinearPipeline, texture: texture),
+              let peak = runPeakLuminance(texture: texture) else {
+            return nil
+        }
+        let range = luminanceRange(peak)
+        guard range > 0, range.isFinite,
+              let bins = runLuminanceBins(texture: texture, binCount: luminanceBinCount, range: range) else {
+            return nil
+        }
+        return LinearMeasurements(peakLuminance: peak, histogram: histogram,
+                                  luminanceBins: bins, luminanceRange: range)
+    }
+
+    /// Peak luminance over the texture (`maxLuminanceLinear`). The caller must hold `lock`.
+    private func runPeakLuminance(texture: MTLTexture) -> Float? {
+        guard let peakBuffer = device.makeBuffer(length: MemoryLayout<UInt32>.size, options: .storageModeShared),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return nil
+        }
+        memset(peakBuffer.contents(), 0, MemoryLayout<UInt32>.size)  // bit pattern of 0.0
+        encoder.setComputePipelineState(maxLuminancePipeline)
+        encoder.setTexture(texture, index: 0)
+        encoder.setBuffer(peakBuffer, offset: 0, index: 0)
+        dispatchPerPixel(encoder, over: texture)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        // The kernel max-reduces the float's bit pattern (exact for finite values ≥ 0).
+        return Float(bitPattern: peakBuffer.contents().load(as: UInt32.self))
+    }
+
+    /// Uniform luminance buckets over [0, range] (`luminanceBinsLinear`). The caller must hold `lock`.
+    private func runLuminanceBins(texture: MTLTexture, binCount: Int, range: Float) -> [Int]? {
+        let size = binCount * MemoryLayout<UInt32>.size
+        guard let binsBuffer = device.makeBuffer(length: size, options: .storageModeShared),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeComputeCommandEncoder() else {
+            return nil
+        }
+        memset(binsBuffer.contents(), 0, size)
+        var params = LuminanceBinParams(binCount: UInt32(binCount), scale: Float(binCount) / range)
+        encoder.setComputePipelineState(luminanceBinsPipeline)
+        encoder.setTexture(texture, index: 0)
+        encoder.setBuffer(binsBuffer, offset: 0, index: 0)
+        encoder.setBytes(&params, length: MemoryLayout<LuminanceBinParams>.size, index: 1)
+        dispatchPerPixel(encoder, over: texture)
+        encoder.endEncoding()
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        let counts = binsBuffer.contents().assumingMemoryBound(to: UInt32.self)
+        return (0..<binCount).map { Int(counts[$0]) }
+    }
+
+    /// One thread per pixel of `texture`, in 16×16 threadgroups.
+    private func dispatchPerPixel(_ encoder: MTLComputeCommandEncoder, over texture: MTLTexture) {
+        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
+        let threadgroups = MTLSize(
+            width: (texture.width + threadgroupSize.width - 1) / threadgroupSize.width,
+            height: (texture.height + threadgroupSize.height - 1) / threadgroupSize.height,
+            depth: 1
+        )
+        encoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
+    }
+
+    /// Shared dispatch for both histogram kernels (same bin edges, buffers and output layout).
+    /// The caller must hold `lock`.
+    private func runHistogram(pipeline: MTLComputePipelineState,
+                              texture: MTLTexture) -> HistogramCalculator.HistogramResult? {
+        // 1) Bin edges (same as HistogramCalculator), reused across calls.
         let edgesU = Self.calculateBinEdges(
             binsSdr: 256,
             uMax: Constants.maxHistogramNit / Constants.referenceHDRwhiteNit
         )
         let binCount = edgesU.count - 1
-        
-        // 2) Create/update the edges buffer (reused across calls)
-        if edgesBuffer == nil || edgesBuffer!.length != edgesU.count * MemoryLayout<Float>.size {
-            edgesBuffer = device.makeBuffer(
-                bytes: edgesU,
-                length: edgesU.count * MemoryLayout<Float>.size,
-                options: .storageModeShared
-            )
+        let edgesSize = edgesU.count * MemoryLayout<Float>.size
+        if edgesBuffer == nil || edgesBuffer!.length != edgesSize {
+            edgesBuffer = device.makeBuffer(bytes: edgesU, length: edgesSize, options: .storageModeShared)
         } else {
-            // Riusa buffer esistente
-            memcpy(edgesBuffer!.contents(), edgesU, edgesU.count * MemoryLayout<Float>.size)
+            memcpy(edgesBuffer!.contents(), edgesU, edgesSize)
         }
-        
-        // 3) Create histogram buffers (atomic_uint for thread-safety)
-        // Ogni buffer: binCount × 4 bytes (atomic_uint)
+
+        // 2) Histogram buffers (atomic_uint per bin), zeroed.
         let histBufferSize = binCount * MemoryLayout<UInt32>.size
-        
-        if histogramBuffers.count != 4 {
-            histogramBuffers = (0..<4).map { _ in
-                device.makeBuffer(length: histBufferSize, options: .storageModeShared)!
+        if histogramBuffers.count != 4 || histogramBuffers[0].length != histBufferSize {
+            histogramBuffers = (0..<4).compactMap { _ in
+                device.makeBuffer(length: histBufferSize, options: .storageModeShared)
             }
+            guard histogramBuffers.count == 4 else { return nil }
         }
-        
-        // Reset to zero
         for buffer in histogramBuffers {
             memset(buffer.contents(), 0, histBufferSize)
         }
-        
-        // 4) Render the image into a Metal texture
-        guard let texture = renderToMetalTexture(ciImage: ciImage, context: context) else {
-            // print("❌ Failed to create Metal texture")
-            return nil
-        }
-        
-        // 5) Run the histogram compute shader
+
+        // 3) Dispatch (1 thread per pixel).
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            // print("❌ Failed to create command buffer")
             return nil
         }
-        
-        computeEncoder.setComputePipelineState(histogramPipeline)
+        computeEncoder.setComputePipelineState(pipeline)
         computeEncoder.setTexture(texture, index: 0)
         computeEncoder.setBuffer(edgesBuffer, offset: 0, index: 0)
         computeEncoder.setBuffer(histogramBuffers[0], offset: 0, index: 1)  // R
         computeEncoder.setBuffer(histogramBuffers[1], offset: 0, index: 2)  // G
         computeEncoder.setBuffer(histogramBuffers[2], offset: 0, index: 3)  // B
         computeEncoder.setBuffer(histogramBuffers[3], offset: 0, index: 4)  // Y
-        
         var params = HistogramParams(
             binCount: UInt32(binCount),
             referenceWhiteNit: Constants.referenceHDRwhiteNit
         )
         computeEncoder.setBytes(&params, length: MemoryLayout<HistogramParams>.size, index: 5)
-        
-        // Dispatch threads (1 thread per pixel)
-        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let threadgroups = MTLSize(
-            width: (width + threadgroupSize.width - 1) / threadgroupSize.width,
-            height: (height + threadgroupSize.height - 1) / threadgroupSize.height,
-            depth: 1
-        )
-        
-        computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
+
+        dispatchPerPixel(computeEncoder, over: texture)
         computeEncoder.endEncoding()
-        
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        
-        // 6) Read back results from the buffers
-        var redHist = [UInt32](repeating: 0, count: binCount)
-        var greenHist = [UInt32](repeating: 0, count: binCount)
-        var blueHist = [UInt32](repeating: 0, count: binCount)
-        var lumaHist = [UInt32](repeating: 0, count: binCount)
-        
-        memcpy(&redHist, histogramBuffers[0].contents(), histBufferSize)
-        memcpy(&greenHist, histogramBuffers[1].contents(), histBufferSize)
-        memcpy(&blueHist, histogramBuffers[2].contents(), histBufferSize)
-        memcpy(&lumaHist, histogramBuffers[3].contents(), histBufferSize)
-        
-        // 7) Convert to Float and apply smoothing (CPU is fine here; it is fast).
-        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
-        let redSmooth = redHist.map { Float($0) }
-        let greenSmooth = greenHist.map { Float($0) }
-        let blueSmooth = blueHist.map { Float($0) }
-        let lumaSmooth = lumaHist.map { Float($0) }
-        
-        // 8) Compute bin centers and X positions
-        var centersU = [Float]()
-        var centersNit = [Float]()
-        
-        for i in 0..<binCount {
-            let centerU = (edgesU[i] + edgesU[i + 1]) / 2.0
-            centersU.append(centerU)
-            centersNit.append(centerU * Constants.referenceHDRwhiteNit)
+
+        // 4) Read back RAW counts (smoothing is applied at render time so it can be tuned live).
+        func counts(_ buffer: MTLBuffer) -> [Float] {
+            let ptr = buffer.contents().assumingMemoryBound(to: UInt32.self)
+            return (0..<binCount).map { Float(ptr[$0]) }
         }
-        
+
+        // 5) Bin centers → X positions.
+        var centersNit = [Float]()
+        centersNit.reserveCapacity(binCount)
+        for i in 0..<binCount {
+            centersNit.append((edgesU[i] + edgesU[i + 1]) / 2.0 * Constants.referenceHDRwhiteNit)
+        }
         let xCenters = Self.nitsToX(centersNit, white: Constants.referenceHDRwhiteNit)
-        
-        // let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        // print("✅ Metal SDR histogram calculated in \(String(format: "%.3f", elapsed))s")
-        // print("   Bins: \(binCount), Resolution: \(width)×\(height)")
-        
+
         return HistogramCalculator.HistogramResult(
             xCenters: xCenters,
-            redCounts: redSmooth,
-            greenCounts: greenSmooth,
-            blueCounts: blueSmooth,
-            lumaCounts: lumaSmooth
+            redCounts: counts(histogramBuffers[0]),
+            greenCounts: counts(histogramBuffers[1]),
+            blueCounts: counts(histogramBuffers[2]),
+            lumaCounts: counts(histogramBuffers[3])
         )
     }
-    
-    /// Computes an HDR histogram using Metal from 16-bit PQ samples.
-    func calculateHistogramFromHDR(
-        fromBytes bytes: [UInt8],
-        width: Int,
-        height: Int,
-        bitsPerComponent: Int,
-        componentsPerPixel: Int,
-        isBigEndian: Bool,
-        smoothWindow: Int = 11
-    ) -> HistogramCalculator.HistogramResult? {
-        lock.lock()
-        defer { lock.unlock() }
-
-        // print("   🔍 [calculateHistogramFromHDR] Starting...")
-        
-        guard bitsPerComponent == 16 else {
-            // print("❌ Metal HDR histogram requires 16-bit input")
-            return nil
-        }
-        
-        // let startTime = CFAbsoluteTimeGetCurrent()
-        
-        // 1) Create the texture Metal da raw bytes
-        guard let texture = createTextureFromRawBytes(
-            bytes: bytes,
-            width: width,
-            height: height,
-            bitsPerComponent: bitsPerComponent,
-            componentsPerPixel: componentsPerPixel,
-            isBigEndian: isBigEndian
-        ) else {
-            // print("❌ Failed to create Metal texture from raw bytes")
-            return nil
-        }
-        
-        // 2) Prepare bin edges
-        let edgesU = Self.calculateBinEdges(
-            binsSdr: 256,
-            uMax: Constants.maxHistogramNit / Constants.referenceHDRwhiteNit
-        )
-        let binCount = edgesU.count - 1
-        
-        // 3) Create/update the edges buffer
-        if edgesBuffer == nil || edgesBuffer!.length != edgesU.count * MemoryLayout<Float>.size {
-            edgesBuffer = device.makeBuffer(
-                bytes: edgesU,
-                length: edgesU.count * MemoryLayout<Float>.size,
-                options: .storageModeShared
-            )
-        } else {
-            memcpy(edgesBuffer!.contents(), edgesU, edgesU.count * MemoryLayout<Float>.size)
-        }
-        
-        // 4) Create histogram buffers
-        let histBufferSize = binCount * MemoryLayout<UInt32>.size
-        
-        if histogramBuffers.count != 4 {
-            histogramBuffers = (0..<4).map { _ in
-                device.makeBuffer(length: histBufferSize, options: .storageModeShared)!
-            }
-        }
-        
-        // Reset to zero
-        for buffer in histogramBuffers {
-            memset(buffer.contents(), 0, histBufferSize)
-        }
-        
-        // 5) Run the PQ compute shader
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            // print("❌ Failed to create command buffer")
-            return nil
-        }
-        
-        computeEncoder.setComputePipelineState(histogramPQPipeline)  // Use the PQ-aware pipeline.
-        computeEncoder.setTexture(texture, index: 0)
-        computeEncoder.setBuffer(edgesBuffer, offset: 0, index: 0)
-        computeEncoder.setBuffer(histogramBuffers[0], offset: 0, index: 1)
-        computeEncoder.setBuffer(histogramBuffers[1], offset: 0, index: 2)
-        computeEncoder.setBuffer(histogramBuffers[2], offset: 0, index: 3)
-        computeEncoder.setBuffer(histogramBuffers[3], offset: 0, index: 4)
-        
-        var params = HistogramParams(
-            binCount: UInt32(binCount),
-            referenceWhiteNit: Constants.referenceHDRwhiteNit
-        )
-        computeEncoder.setBytes(&params, length: MemoryLayout<HistogramParams>.size, index: 5)
-        
-        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let threadgroups = MTLSize(
-            width: (width + threadgroupSize.width - 1) / threadgroupSize.width,
-            height: (height + threadgroupSize.height - 1) / threadgroupSize.height,
-            depth: 1
-        )
-        
-        computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
-        computeEncoder.endEncoding()
-        
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        
-        // 6) Read back results
-        var redHist = [UInt32](repeating: 0, count: binCount)
-        var greenHist = [UInt32](repeating: 0, count: binCount)
-        var blueHist = [UInt32](repeating: 0, count: binCount)
-        var lumaHist = [UInt32](repeating: 0, count: binCount)
-        
-        memcpy(&redHist, histogramBuffers[0].contents(), histBufferSize)
-        memcpy(&greenHist, histogramBuffers[1].contents(), histBufferSize)
-        memcpy(&blueHist, histogramBuffers[2].contents(), histBufferSize)
-        memcpy(&lumaHist, histogramBuffers[3].contents(), histBufferSize)
-        
-        // 7) Smoothing
-        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
-        let redSmooth = redHist.map { Float($0) }
-        let greenSmooth = greenHist.map { Float($0) }
-        let blueSmooth = blueHist.map { Float($0) }
-        let lumaSmooth = lumaHist.map { Float($0) }
-        
-        // 8) Bin centers
-        var centersU = [Float]()
-        var centersNit = [Float]()
-        
-        for i in 0..<binCount {
-            let centerU = (edgesU[i] + edgesU[i + 1]) / 2.0
-            centersU.append(centerU)
-            centersNit.append(centerU * Constants.referenceHDRwhiteNit)
-        }
-        
-        let xCenters = Self.nitsToX(centersNit, white: Constants.referenceHDRwhiteNit)
-        
-        // let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        // print("✅ Metal HDR histogram calculated in \(String(format: "%.3f", elapsed))s")
-        // print("   Bins: \(binCount), Resolution: \(width)×\(height)")
-        
-        return HistogramCalculator.HistogramResult(
-            xCenters: xCenters,
-            redCounts: redSmooth,
-            greenCounts: greenSmooth,
-            blueCounts: blueSmooth,
-            lumaCounts: lumaSmooth
-        )
-    }
-    
-    // Create a Metal texture from raw 16-bit samples (optimized).
-    private func createTextureFromRawBytes(
-        bytes: [UInt8],
-        width: Int,
-        height: Int,
-        bitsPerComponent: Int,
-        componentsPerPixel: Int,
-        isBigEndian: Bool
-    ) -> MTLTexture? {
-        
-        // Validation
-        guard width > 0 && height > 0 else {
-            // print("❌ Invalid dimensions: width=\(width), height=\(height)")
-            return nil
-        }
-        
-        guard bitsPerComponent == 16 else {
-            // print("❌ Invalid bitsPerComponent: \(bitsPerComponent) (expected 16)")
-            return nil
-        }
-        
-        // : Metal requires RGBA (4 components), while the HDR input is RGB (3).
-        // We convert RGB → RGBA by appending an alpha channel (65535).
-        
-        let pixelCount = width * height
-        let bytesPerPixel = componentsPerPixel * 2  // 16-bit = 2 bytes per component
-
-        // Convert RGB(A) → RGBA via direct indexed writes into a preallocated buffer.
-        // The previous implementation used ~8 `Array.append` per pixel (≈177M calls for a 22MP
-        // image), which dominated runtime (bounds/capacity checks + ARC on the buffer). Writing
-        // through `withUnsafeMutableBufferPointer` is byte-identical but ~10–20× faster.
-        // Alpha bytes default to 0xFF (→ 65535) by initializing the buffer to 0xFF.
-        let tConv = Prof.tic()
-        var rgbaBytes = [UInt8](repeating: 0xFF, count: pixelCount * 4 * 2)
-        bytes.withUnsafeBufferPointer { srcBuf in
-            rgbaBytes.withUnsafeMutableBufferPointer { dstBuf in
-                guard let src = srcBuf.baseAddress, let dst = dstBuf.baseAddress else { return }
-                if isBigEndian {
-                    for p in 0..<pixelCount {
-                        let s = p * bytesPerPixel, d = p * 8
-                        dst[d + 0] = src[s + 1]; dst[d + 1] = src[s + 0]  // R (byte-swapped)
-                        dst[d + 2] = src[s + 3]; dst[d + 3] = src[s + 2]  // G
-                        dst[d + 4] = src[s + 5]; dst[d + 5] = src[s + 4]  // B
-                        // dst[d+6], dst[d+7] (alpha) stay 0xFF
-                    }
-                } else {
-                    for p in 0..<pixelCount {
-                        let s = p * bytesPerPixel, d = p * 8
-                        dst[d + 0] = src[s + 0]; dst[d + 1] = src[s + 1]  // R
-                        dst[d + 2] = src[s + 2]; dst[d + 3] = src[s + 3]  // G
-                        dst[d + 4] = src[s + 4]; dst[d + 5] = src[s + 5]  // B
-                        // dst[d+6], dst[d+7] (alpha) stay 0xFF
-                    }
-                }
-            }
-        }
-        Prof.toc("metal.rgbaConvert [\(width)×\(height)]", tConv)
-        
-        // Create an RGBA texture
-        let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .rgba16Uint,
-            width: width,
-            height: height,
-            mipmapped: false
-        )
-        textureDescriptor.usage = [.shaderRead]
-        
-        guard let texture = device.makeTexture(descriptor: textureDescriptor) else {
-            // print("❌ Failed to create Metal texture")
-            return nil
-        }
-        
-        // bytesPerRow is now correct (4 components).
-        let bytesPerRow = width * 4 * 2  // RGBA × 16-bit
-        
-        texture.replace(
-            region: MTLRegionMake2D(0, 0, width, height),
-            mipmapLevel: 0,
-            withBytes: rgbaBytes,
-            bytesPerRow: bytesPerRow
-        )
-        
-        // print("✅ Texture uploaded successfully")
-        return texture
-    }
-    
-    
-    
     
     // MARK: - Render CIImage to a Metal texture
     
@@ -563,126 +368,6 @@ nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
         
         return result
     }
-    
-    /// Computes peak luminance (headroom) using Metal (typically much faster than the CPU implementation).
-    func calculatePeakLuminance(
-        fromBytes bytes: [UInt8],
-        width: Int,
-        height: Int,
-        bitsPerComponent: Int,
-        componentsPerPixel: Int,
-        isBigEndian: Bool
-    ) -> Float? {
-        lock.lock()
-        defer { lock.unlock() }
-
-        // print("   🔍 [calculatePeakLuminance] Starting...")
-        // print("      Resolution: \(width)×\(height)")
-        // print("      Bytes: \(bytes.count)")
-        // print("      Components: \(componentsPerPixel)")
-        
-        guard bitsPerComponent == 16 else {
-            // print("   ❌ Metal headroom calculation requires 16-bit input")
-            return nil
-        }
-        
-        // Validation: ensure the input buffer is large enough. The bytes are the source's native
-        // layout (componentsPerPixel × 16-bit) — typically RGB (3) for these PNGs, not RGBA. The
-        // previous check assumed 4 components, so every RGB image failed it and silently fell back
-        // to the ~10× slower CPU peak-luminance scan. (`createTextureFromRawBytes` already handles
-        // RGB input correctly by synthesizing the alpha channel.)
-        let expectedBytes = width * height * componentsPerPixel * 2
-        guard bytes.count >= expectedBytes else {
-            // print("   ❌ Not enough bytes: \(bytes.count) < \(expectedBytes)")
-            return nil
-        }
-        
-//        let startTime = CFAbsoluteTimeGetCurrent()
-        
-        // Create the texture
-        let tTex = Prof.tic()
-        guard let texture = createTextureFromRawBytes(
-            bytes: bytes,
-            width: width,
-            height: height,
-            bitsPerComponent: bitsPerComponent,
-            componentsPerPixel: componentsPerPixel,
-            isBigEndian: isBigEndian
-        ) else {
-            // print("   ❌ Failed to create Metal texture for peak calculation")
-            return nil
-        }
-        Prof.toc("metalPeak.buildTexture [\(width)×\(height)]", tTex)
-
-        let tGPU = Prof.tic()
-        defer { Prof.toc("metalPeak.gpu [\(width)×\(height)]", tGPU) }
-
-        // 2) Crea buffer per atomic max (1 uint)
-        guard let maxBuffer = device.makeBuffer(
-            length: MemoryLayout<UInt32>.size,
-            options: .storageModeShared
-        ) else {
-            // print("❌ Failed to create max buffer")
-            return nil
-        }
-        
-        // Reset to zero
-        memset(maxBuffer.contents(), 0, MemoryLayout<UInt32>.size)
-        
-        // 3) Esegui compute shader
-        guard let commandBuffer = commandQueue.makeCommandBuffer(),
-              let computeEncoder = commandBuffer.makeComputeCommandEncoder() else {
-            // print("❌ Failed to create command buffer")
-            return nil
-        }
-        
-        computeEncoder.setComputePipelineState(maxLuminancePipeline)
-        computeEncoder.setTexture(texture, index: 0)
-        computeEncoder.setBuffer(maxBuffer, offset: 0, index: 0)
-        
-        let threadgroupSize = MTLSize(width: 16, height: 16, depth: 1)
-        let threadgroups = MTLSize(
-            width: (width + threadgroupSize.width - 1) / threadgroupSize.width,
-            height: (height + threadgroupSize.height - 1) / threadgroupSize.height,
-            depth: 1
-        )
-        
-        computeEncoder.dispatchThreadgroups(threadgroups, threadsPerThreadgroup: threadgroupSize)
-        computeEncoder.endEncoding()
-        
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        
-        // 4) Read back the result
-        let maxMilliNitsPtr = maxBuffer.contents().assumingMemoryBound(to: UInt32.self)
-        let maxMilliNits = maxMilliNitsPtr[0]
-        let maxNits = Float(maxMilliNits) / 1000.0
-        
-        // let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        // print("✅ Metal peak luminance calculated in \(String(format: "%.3f", elapsed))s")
-        // print("   Peak: \(String(format: "%.1f", maxNits)) nit, Resolution: \(width)×\(height)")
-        
-        // print("   📊 Peak luminance result:")
-        // print("      Max milli-nits (raw): \(maxMilliNits)")
-        // print("      Max nits: \(maxNits)")
-        
-        // Validation
-        if maxNits < 100 {
-            // print("   ⚠️ WARNING: Peak is very low (\(maxNits) nit)")
-            // print("      This might indicate black/corrupt image")
-        }
-        
-        if maxNits == 0 {
-            // print("   ❌ ERROR: Peak is 0! Image data might be all black")
-            return nil
-        }
-        
-        // let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        // print("   ✅ Metal peak luminance calculated in \(String(format: "%.3f", elapsed))s")
-        // print("      Peak: \(String(format: "%.1f", maxNits)) nit, Resolution: \(width)×\(height)")
-        
-        return maxNits
-    }
 }
 
 // MARK: - Supporting Types
@@ -690,4 +375,10 @@ nonisolated final class MetalHistogramCalculator: @unchecked Sendable {
 private struct HistogramParams {
     let binCount: UInt32
     let referenceWhiteNit: Float
+}
+
+/// Mirrors `LuminanceBinParams` in HistogramShaders.metal.
+private struct LuminanceBinParams {
+    let binCount: UInt32
+    let scale: Float   // bins per linear unit: binCount / range
 }

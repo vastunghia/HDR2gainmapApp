@@ -13,23 +13,6 @@ nonisolated class HistogramCalculator {
     
     // MARK: - Transfer Functions
     
-    /// ST-2084 (PQ) EOTF: code → linear relative luminance [0..1] where 1 = 10k nit
-    private static func pqEOTF(_ v: [Float]) -> [Float] {
-        let m1: Float = 2610.0 / 16384.0
-        let m2: Float = 2523.0 / 32.0
-        let c1: Float = 3424.0 / 4096.0
-        let c2: Float = 2413.0 / 128.0
-        let c3: Float = 2392.0 / 128.0
-        
-        return v.map { val in
-            let v = max(0, min(1, val))
-            let vp = pow(v, 1.0 / m2)
-            let num = max(vp - c1, 0)
-            let den = c2 - c3 * vp
-            return pow(num / den, 1.0 / m1)
-        }
-    }
-    
     /// sRGB encode (linear → sRGB code, OETF)
     private static func srgbEncode(_ x: [Float]) -> [Float] {
         let a: Float = 0.055
@@ -153,125 +136,52 @@ nonisolated class HistogramCalculator {
         }
     }
     
-    /// Computes an HDR histogram from 16-bit PQ pixel bytes.
-    static func calculateHistogram(
-        fromBytes bytes: [UInt8],
+    /// Computes the HDR histogram from the resident linear image: extended-linear Display P3,
+    /// RGBA Float32, linear 1.0 = SDR reference white — already the histogram's u-space, so PQ and
+    /// HLG inputs are handled alike. CPU fallback of the Metal `calculateHistogramLinear` kernel.
+    /// `rowStride` is in floats.
+    static func calculateHistogramFromLinear(
+        pixels: UnsafePointer<Float>,
         width: Int,
         height: Int,
-        bitsPerComponent: Int,
-        componentsPerPixel: Int,
-        isBigEndian: Bool,
-        smoothWindow: Int = 11
+        rowStride: Int
     ) -> HistogramResult? {
-        
-        guard bitsPerComponent == 16 else {
-            // print("❌ Histogram requires 16-bit input")
-            return nil
-        }
-        
-        // let startTime = CFAbsoluteTimeGetCurrent()
-        
-        // 1) Compute bin edges
+        guard width > 0, height > 0, rowStride >= width * 4 else { return nil }
+
         let edgesU = calculateBinEdges(binsSdr: 256, uMax: Constants.maxHistogramNit / Constants.referenceHDRwhiteNit)
         let binCount = edgesU.count - 1
-        
-        // 2) Initialize counters
+
         var redHist = [Int](repeating: 0, count: binCount)
         var greenHist = [Int](repeating: 0, count: binCount)
         var blueHist = [Int](repeating: 0, count: binCount)
         var lumaHist = [Int](repeating: 0, count: binCount)
-        
-        // 3) Process pixels
-        let bytesPerRow = width * componentsPerPixel * 2  // 16-bit = 2 bytes
-        let pixelStride = componentsPerPixel * 2
-        
+
+        let (wr, wg, wb) = Constants.displayP3LumaWeights
         for y in 0..<height {
-            let rowStart = y * bytesPerRow
-            
+            let row = pixels + y * rowStride
             for x in 0..<width {
-                let pixelStart = rowStart + x * pixelStride
-                
-                // Read 16-bit PQ code values [0..65535]
-                let r16: UInt16
-                let g16: UInt16
-                let b16: UInt16
-                
-                if isBigEndian {
-                    r16 = (UInt16(bytes[pixelStart + 0]) << 8) | UInt16(bytes[pixelStart + 1])
-                    g16 = (UInt16(bytes[pixelStart + 2]) << 8) | UInt16(bytes[pixelStart + 3])
-                    b16 = (UInt16(bytes[pixelStart + 4]) << 8) | UInt16(bytes[pixelStart + 5])
-                } else {
-                    r16 = UInt16(bytes[pixelStart + 0]) | (UInt16(bytes[pixelStart + 1]) << 8)
-                    g16 = UInt16(bytes[pixelStart + 2]) | (UInt16(bytes[pixelStart + 3]) << 8)
-                    b16 = UInt16(bytes[pixelStart + 4]) | (UInt16(bytes[pixelStart + 5]) << 8)
-                }
-                
-                // Normalize to [0..1]
-                let rCode = Float(r16) / 65535.0
-                let gCode = Float(g16) / 65535.0
-                let bCode = Float(b16) / 65535.0
-                
-                // PQ EOTF → linear [0..1] where 1 = 10k nit
-                let rLin = pqEOTF([rCode])[0]
-                let gLin = pqEOTF([gCode])[0]
-                let bLin = pqEOTF([bCode])[0]
-                
-                // Convert to u-space (relative to reference white)
-                let scale = 10000.0 / Constants.referenceHDRwhiteNit  // = 100
-                let rU = rLin * scale
-                let gU = gLin * scale
-                let bU = bLin * scale
-                
-                // Linear luma
-                let yLin = 0.2126 * rLin + 0.7152 * gLin + 0.0722 * bLin
-                let yU = yLin * scale
-                
-                // Find the bin for each channel
-                if let rBin = findBin(value: rU, edges: edgesU) {
-                    redHist[rBin] += 1
-                }
-                if let gBin = findBin(value: gU, edges: edgesU) {
-                    greenHist[gBin] += 1
-                }
-                if let bBin = findBin(value: bU, edges: edgesU) {
-                    blueHist[bBin] += 1
-                }
-                if let yBin = findBin(value: yU, edges: edgesU) {
-                    lumaHist[yBin] += 1
-                }
+                let p = row + x * 4
+                let rU = p[0], gU = p[1], bU = p[2]
+                let yU = wr * rU + wg * gU + wb * bU
+                if let bin = findBin(value: rU, edges: edgesU) { redHist[bin] += 1 }
+                if let bin = findBin(value: gU, edges: edgesU) { greenHist[bin] += 1 }
+                if let bin = findBin(value: bU, edges: edgesU) { blueHist[bin] += 1 }
+                if let bin = findBin(value: yU, edges: edgesU) { lumaHist[bin] += 1 }
             }
         }
-        
-        // 4) Convert counts to Float and apply smoothing
-        // Store RAW counts; smoothing is applied at render time so it can be tuned live.
-        let redSmooth = redHist.map { Float($0) }
-        let greenSmooth = greenHist.map { Float($0) }
-        let blueSmooth = blueHist.map { Float($0) }
-        let lumaSmooth = lumaHist.map { Float($0) }
-        
-        // 5) Compute bin centers in u-space and nits
-        var centersU = [Float]()
+
+        // RAW counts; smoothing is applied at render time so it can be tuned live.
         var centersNit = [Float]()
-        
+        centersNit.reserveCapacity(binCount)
         for i in 0..<binCount {
-            let centerU = (edgesU[i] + edgesU[i + 1]) / 2.0
-            centersU.append(centerU)
-            centersNit.append(centerU * Constants.referenceHDRwhiteNit)
+            centersNit.append((edgesU[i] + edgesU[i + 1]) / 2.0 * Constants.referenceHDRwhiteNit)
         }
-        
-        // 6) Map centers to X positions in [0..1]
-        let xCenters = nitsToX(centersNit, white: Constants.referenceHDRwhiteNit)
-        
-        //        let elapsed = CFAbsoluteTimeGetCurrent() - startTime
-        // print("✅ Histogram calculated in \(String(format: "%.3f", elapsed))s")
-        // print("   Bins: \(binCount), Range: 0..\(Constants.maxHistogramNit) nit")
-        
         return HistogramResult(
-            xCenters: xCenters,
-            redCounts: redSmooth,
-            greenCounts: greenSmooth,
-            blueCounts: blueSmooth,
-            lumaCounts: lumaSmooth,
+            xCenters: nitsToX(centersNit, white: Constants.referenceHDRwhiteNit),
+            redCounts: redHist.map { Float($0) },
+            greenCounts: greenHist.map { Float($0) },
+            blueCounts: blueHist.map { Float($0) },
+            lumaCounts: lumaHist.map { Float($0) }
         )
     }
     
