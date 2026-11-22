@@ -11,6 +11,7 @@ enum ProcessingError: LocalizedError {
     case imageConversionFailed
     case histogramCalculationFailed
     case isoConversionFailed(String)
+    case writeFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,7 @@ enum ProcessingError: LocalizedError {
         case .imageConversionFailed: return "Image conversion failed"
         case .histogramCalculationFailed: return "Histogram calculation failed"
         case .isoConversionFailed(let msg): return "ISO conversion failed: \(msg)"
+        case .writeFailed(let msg): return "Could not write the output file: \(msg)"
         }
     }
 }

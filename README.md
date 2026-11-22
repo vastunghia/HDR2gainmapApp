@@ -124,8 +124,12 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 <summary><b>Workflow &amp; navigation</b></summary>
 
 - **Batch export** with progress tracking and the option to append a string of your choice to all
-  file names; the running batch can be **cancelled** at any time (the current file finishes, then it
-  stops, and a summary reports what was done).
+  file names; the running batch can be **cancelled** at any time (it stops promptly — the image being
+  processed is not written — and a summary reports what was done). Exports run in the background, so
+  the app stays responsive; an existing output file is only replaced once the new one has been fully
+  encoded, so a failed or cancelled export never destroys a previous one. Two images that would
+  produce the same output name (e.g. `photo.png` and `photo.tif`) are not exported, and the summary
+  says why.
 - **Save / open tone-mapping parameters**: save the per-image tone-mapping parameters of a
   whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing
   a look across machines (only images you actually customized are stored; any images listed in the
@@ -544,7 +548,7 @@ The application implements multiple cache layers for performance:
 
 ### Navigation & Pre-loading
 
-Selecting an image first switches the preview, then warms its neighbours (next and previous) in the background on a low-priority, cancellable task — so moving through a folder with the thumbnail bar or the ←/→ arrow keys is near-instant. The heavy work (image loading, tone-mapping, histograms) runs off the main thread, keeping the interface responsive.
+Selecting an image first switches the preview, then warms its neighbours (next and previous) in the background on a low-priority, cancellable task — so moving through a folder with the thumbnail bar or the ←/→ arrow keys is near-instant. The heavy work (image loading, tone-mapping, histograms, export) runs off the main thread, keeping the interface responsive.
 
 The ⚡️ badge on a thumbnail reflects whether that image's pixel data is currently held in the in-memory cache (raw bytes or loaded image), so you can see at a glance which images will open instantly. Because the caches are bounded, distant images are eventually evicted to free memory, and the badge disappears accordingly — a lightweight poll keeps the badges in sync in real time.
 

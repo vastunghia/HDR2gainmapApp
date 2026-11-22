@@ -40,6 +40,24 @@ enum SessionExportPrompt {
     }
 }
 
+/// "An export is running — stop it?" prompt, shared by the window-close and app-quit paths. Now that
+/// exports run off the main thread the app stays fully usable meanwhile, so ⌘Q / ⌘W can arrive
+/// mid-export. Returns `true` when the caller may proceed (no export running, or the user chose to
+/// stop it — the caller then awaits `stopExportAndWait()` so no file write is cut short).
+@MainActor
+enum ExportInProgressPrompt {
+    static func confirmStop(viewModel: MainViewModel) -> Bool {
+        guard viewModel.isExporting else { return true }
+        let alert = NSAlert()
+        alert.messageText = "An export is in progress"
+        alert.informativeText = "Stop it? Images already exported are kept; the image being processed "
+            + "and the remaining ones are not written."
+        alert.addButton(withTitle: "Stop Export")        // .alertFirstButtonReturn
+        alert.addButton(withTitle: "Continue Exporting") // .alertSecondButtonReturn
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+}
+
 /// App delegate that intercepts Quit (⌘Q / menu) to offer exporting settings first.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -49,8 +67,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let viewModel = SessionCoordinator.shared.activeViewModel,
-              viewModel.hasUnsavedSettingsToExport() else {
+        guard let viewModel = SessionCoordinator.shared.activeViewModel else { return .terminateNow }
+
+        // A running export first: stop it (and wait for it to wind down) before anything else.
+        if viewModel.isExporting {
+            guard ExportInProgressPrompt.confirmStop(viewModel: viewModel) else { return .terminateCancel }
+            Task { @MainActor in
+                await viewModel.stopExportAndWait()
+                guard viewModel.hasUnsavedSettingsToExport() else {
+                    NSApp.reply(toApplicationShouldTerminate: true)
+                    return
+                }
+                SessionExportPrompt.confirm(viewModel: viewModel) { proceed in
+                    NSApp.reply(toApplicationShouldTerminate: proceed)
+                }
+            }
+            return .terminateLater
+        }
+
+        guard viewModel.hasUnsavedSettingsToExport() else {
             return .terminateNow
         }
         SessionExportPrompt.confirm(viewModel: viewModel) { proceed in
@@ -103,7 +138,20 @@ struct SessionWindowGuard: NSViewRepresentable {
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             if forceClose { return true }
-            guard let viewModel, viewModel.hasUnsavedSettingsToExport() else { return true }
+            guard let viewModel else { return true }
+
+            // A running export first: stop it and wait, then re-run the close (which then goes
+            // through the unsaved-parameters check below).
+            if viewModel.isExporting {
+                guard ExportInProgressPrompt.confirmStop(viewModel: viewModel) else { return false }
+                Task { @MainActor [weak sender] in
+                    await viewModel.stopExportAndWait()
+                    sender?.performClose(nil)
+                }
+                return false
+            }
+
+            guard viewModel.hasUnsavedSettingsToExport() else { return true }
             SessionExportPrompt.confirm(viewModel: viewModel) { [weak self, weak sender] proceed in
                 guard proceed, let self, let sender else { return }
                 self.forceClose = true

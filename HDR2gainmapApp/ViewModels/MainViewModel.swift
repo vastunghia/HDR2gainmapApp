@@ -1066,13 +1066,23 @@ class MainViewModel {
         }
     }
     
-    /// Cancels an in-progress batch export (finishes the image currently being written, then stops).
+    /// Cancels an in-progress export. It stops at the next stage boundary of the image being
+    /// processed (that image is not written); images already exported are kept.
     func cancelExport() { exportTask?.cancel() }
 
-    /// Performs export for a list of images.
+    /// Cancels the running export (if any) and waits until it has actually stopped — so quitting or
+    /// closing the window never interrupts a file write.
+    func stopExportAndWait() async {
+        exportTask?.cancel()
+        await exportTask?.value
+    }
+
+    /// Performs export for a list of images. The heavy work runs off the main actor
+    /// (`HDRProcessor.export`), so the UI stays responsive and Cancel takes effect promptly.
     private func performExport(images: [HDRImage], outputFolder: URL, explicitOutputURLs: [URL]? = nil) async {
         isExporting = true
         exportProgress = 0.0
+        exportCurrentFile = ""
 
         var succeeded: [String] = []
         var failed: [(String, String)] = []
@@ -1087,53 +1097,68 @@ class MainViewModel {
             return
         }
 
-        for (index, image) in images.enumerated() {
-            // Stop before starting the next image if the user cancelled.
-            if Task.isCancelled { cancelled = true; break }
-
-            exportCurrentFile = image.fileName
-
-            // Gives control to MainActor for one cycle,
-            // so that SwiftUI can render the overlay before
-            // starting the hard work
-            try? await Task.sleep(for: .milliseconds(32))
-
-            // Use the exact URL chosen in the save panel when provided (single export); otherwise
-            // (batch to a folder) generate the filename from the base name + per-image suffix.
+        // Snapshot everything the batch needs up front — each image's tone-mapping parameters and
+        // output URL, plus the export preferences — since the UI stays live while it runs (Settings
+        // can be changed, another folder opened…): nothing is read from the mutable models mid-batch.
+        struct Job {
+            let displayName: String
+            let sourceName: String
+            let params: HDRProcessor.PreviewParams
             let outputURL: URL
-            let filename: String
+            var filename: String { outputURL.lastPathComponent }
+        }
+        let options = HDRProcessor.ExportOptions.fromUserDefaults()
+        let jobs: [Job] = images.enumerated().map { index, image in
+            // The exact URL chosen in the save panel when provided (single export: it carries the
+            // sandbox grant and honors a name edited in the panel); otherwise (batch to a folder) the
+            // base name + per-image suffix.
+            let outputURL: URL
             if let explicit = explicitOutputURLs, index < explicit.count {
                 outputURL = explicit[index]
-                filename = outputURL.lastPathComponent
             } else {
-                let baseName = image.fileName
-                let suffix = image.settings.filenameSuffix
-                filename = FilenameHelper.generateFilename(
-                    baseName: baseName,
-                    suffix: suffix,
-                    extension: "heic"
-                )
-                outputURL = outputFolder.appendingPathComponent(filename)
+                outputURL = outputFolder.appendingPathComponent(FilenameHelper.generateFilename(
+                    baseName: image.fileName, suffix: image.settings.filenameSuffix, extension: "heic"))
+            }
+            return Job(displayName: image.fileName,
+                       sourceName: image.url.lastPathComponent,
+                       params: processor.previewParams(url: image.url, settings: image.settings),
+                       outputURL: outputURL)
+        }
+
+        // Inputs that would produce the same output file (e.g. `photo.png` + `photo.tif` → `photo.heic`)
+        // would silently overwrite each other: export none of them, and say why.
+        let colliding = FilenameHelper.collidingNames(jobs.map(\.filename))
+
+        jobLoop: for (index, job) in jobs.enumerated() {
+            if Task.isCancelled { cancelled = true; break }
+            exportCurrentFile = job.displayName
+
+            if colliding.contains(job.filename.lowercased()) {
+                let others = jobs
+                    .filter { $0.filename.lowercased() == job.filename.lowercased() && $0.sourceName != job.sourceName }
+                    .map(\.sourceName)
+                failed.append((job.sourceName,
+                               "Not exported: \(others.joined(separator: ", ")) would be saved under the same name, "
+                               + "\(job.filename). Give them different filename suffixes."))
+            } else {
+                // An input that isn't a valid HDR image throws before anything is written → skipped;
+                // anything else is a genuine failure. Either way an existing output file is left intact.
+                do {
+                    try await processor.export(params: job.params, options: options, to: job.outputURL)
+                    succeeded.append(job.filename)
+                } catch is CancellationError {
+                    cancelled = true
+                    break jobLoop
+                } catch ProcessingError.cannotReadHDR, ProcessingError.invalidColorSpace(_) {
+                    skipped.append(job.displayName)
+                } catch {
+                    failed.append((job.filename, error.localizedDescription))
+                }
             }
 
-            // EXPORT. `exportImage` performs the same load + tone-map the old validation pass did,
-            // so we attempt it directly instead of pre-rendering a (discarded) preview. An input
-            // that isn't a valid HDR image throws before any file is written → reported as skipped;
-            // anything else that goes wrong during encoding is a genuine failure.
-            try? FileManager.default.removeItem(at: outputURL)
-            do {
-                try await processor.exportImage(image, to: outputURL)
-                succeeded.append(filename)  // ✅ Use final name
-            } catch ProcessingError.cannotReadHDR, ProcessingError.invalidColorSpace(_) {
-                skipped.append(image.fileName)
-            } catch {
-                failed.append((filename, error.localizedDescription))
-            }
-
-            // progress
             exportProgress = Double(index + 1) / Double(totalCount)
         }
-        
+
         // Summary UI
         isExporting = false
         exportResults = ExportResults(

@@ -52,7 +52,8 @@ struct ExportProgressView: View {
                     }
                 }
 
-                // Cancel the batch (the current file finishes, then the export stops).
+                // Cancel the export: it stops at the next stage of the image being processed (which is
+                // not written); images already exported are kept.
                 if let onCancel {
                     Button(didRequestCancel ? "Cancelling…" : "Cancel") {
                         didRequestCancel = true

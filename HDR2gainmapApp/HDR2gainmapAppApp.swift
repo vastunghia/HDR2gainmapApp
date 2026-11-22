@@ -66,13 +66,14 @@ struct SettingsProfileCommands: Commands {
                 viewModel?.exportSettingsProfile()
             }
             .keyboardShortcut("s", modifiers: [.command])
-            .disabled(viewModel == nil || (viewModel?.images.isEmpty ?? true))
+            .disabled(viewModel == nil || (viewModel?.images.isEmpty ?? true) || (viewModel?.isExporting ?? false))
 
             Button("Open Tone-Mapping Parameters…") {
                 viewModel?.importSettingsProfile()
             }
             .keyboardShortcut("o", modifiers: [.command])
-            .disabled(viewModel == nil)
+            // Not while exporting: opening a profile reloads the folder under the running batch.
+            .disabled(viewModel == nil || (viewModel?.isExporting ?? false))
         }
     }
 }

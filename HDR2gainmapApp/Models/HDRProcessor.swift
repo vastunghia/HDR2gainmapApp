@@ -519,151 +519,173 @@ class HDRProcessor {
         _ = try? await histogramForHDRInput(url: params.url)
     }
     
-    /// Exports a single image as HEIC with gain map
+    // MARK: - Export
+
+    /// Export settings, captured once (on the main actor) when an export starts — so a running batch
+    /// is unaffected by Settings changes made meanwhile, and the off-main encode never reads
+    /// preferences itself.
+    nonisolated struct ExportOptions: Sendable {
+        /// 3-channel (RGB) gain map instead of luma (GUI default: on, registered in the App init).
+        let rgbGainMap: Bool
+        /// Legacy Core Image luma gain map (CLI `--mono-coreimage`); ignored when `rgbGainMap`.
+        let monoCoreImage: Bool
+        /// Gain-map resolution divisor: 1 = full, 2 = half.
+        let gainMapSubsampleFactor: Int
+        /// HEIC lossy-compression quality.
+        let quality: Double
+
+        static let defaultQuality = 0.95
+
+        /// The current preferences (`gainMapRGB`, `gainMapMonoCoreImage`, `gainMapSubsampleFactor`,
+        /// `heicExportQuality`), with the fallbacks the engine has always used.
+        static func fromUserDefaults(_ defaults: UserDefaults = .standard) -> ExportOptions {
+            let storedFactor = defaults.integer(forKey: "gainMapSubsampleFactor")
+            let storedQuality = defaults.double(forKey: "heicExportQuality")
+            return ExportOptions(
+                rgbGainMap: defaults.bool(forKey: "gainMapRGB"),
+                monoCoreImage: defaults.bool(forKey: "gainMapMonoCoreImage"),
+                gainMapSubsampleFactor: storedFactor > 0 ? storedFactor : 1,
+                quality: storedQuality > 0 ? storedQuality : defaultQuality
+            )
+        }
+    }
+
+    /// Exports a single image as HEIC with gain map (main-actor convenience, used by the CLI):
+    /// snapshots the image's settings and the current preferences, then runs `export(params:…)`.
     func exportImage(_ image: HDRImage, to outputURL: URL) async throws {
-        
-        let hdr = try loadHDR(url: image.url)
-        
-        // Compute headroom using the shared, consistent method.
-        let measuredHeadroom = getHeadroomForImage(url: image.url)
-        
-        // Tonemap SDR base
-        var sdr: CIImage?
+        try await export(params: previewParams(url: image.url, settings: image.settings),
+                         options: .fromUserDefaults(), to: outputURL)
+    }
 
-        // Get target headroom (common to all methods)
-        let targetHeadroom = image.settings.targetHeadroom ?? 1.0
-
-        switch image.settings.sourceHeadroomMethod {
-        case .peakMax:
-            let calculated = max(1.0, 1.0 + measuredHeadroom - powf(measuredHeadroom, image.settings.tonemapRatio))
-            sdr = tonemap_sdr(from: hdr, sourceHeadroom: calculated, targetHeadroom: targetHeadroom)
-
-        case .percentile:
-            let percentileHeadroom = try await percentileHeadroom(url: image.url, percentile: image.settings.percentile)
-            sdr = tonemap_sdr(from: hdr, sourceHeadroom: percentileHeadroom, targetHeadroom: targetHeadroom)
-
-        case .direct:
-            let sH = image.settings.directSourceHeadroom ?? measuredHeadroom
-            let tH = targetHeadroom
-
-            let maxLimit = max(1.0, measuredHeadroom * 2.0)
-            let sH_clamped = min(max(sH, 0.1), maxLimit)
-            let tH_clamped = min(max(tH, 0.1), maxLimit)
-
-            sdr = tonemap_sdr(from: hdr, sourceHeadroom: sH_clamped, targetHeadroom: tH_clamped)
+    /// Renders `params` as a gain-map HEIC and writes it to `outputURL`, entirely off the main actor
+    /// (`@concurrent`), so the UI stays responsive during an export.
+    ///
+    /// Writing: the whole file is encoded in memory first and written only once that succeeded, so a
+    /// failed or cancelled export never touches an existing file at `outputURL`. The write itself
+    /// goes straight to `outputURL` (non-atomic) on purpose: an atomic write or temp-then-rename needs
+    /// a sibling temp file, which a file-scoped NSSavePanel grant forbids and which already failed on
+    /// external volumes (v1.3.1/1.3.2 history). Writing the exact granted path works for single
+    /// exports, batch folders and external disks alike.
+    ///
+    /// Cancellation is honored between stages (load, tone-map, gain map + encode, write).
+    @concurrent nonisolated func export(params: PreviewParams, options: ExportOptions,
+                                        to outputURL: URL) async throws {
+        let data = try await encodeExport(params: params, options: options)
+        try Task.checkCancellation()
+        do {
+            try data.write(to: outputURL, options: [])
+        } catch {
+            throw ProcessingError.writeFailed("\(outputURL.lastPathComponent): \(error.localizedDescription)")
         }
-        
-        guard let sdrBase = sdr else {
-            throw ProcessingError.tonemapFailed
-        }
+    }
 
-        // Extract metadata from the original HDR PNG file
-        let originalMetadata = extractMetadata(from: image.url)
-        // print("📋 Extracted \(originalMetadata.count) metadata dictionaries from original file")
-        
-        var props = originalMetadata
+    /// Encodes `params` as a gain-map HEIC in memory. The SDR base comes from the same builder as
+    /// the preview (`buildSDRBase`), so the file matches what was previewed.
+    nonisolated private func encodeExport(params: PreviewParams, options: ExportOptions) async throws -> Data {
+        try Task.checkCancellation()
+        let hdr = try loadHDR(url: params.url)
+        let measuredHeadroom = getHeadroomForImage(url: params.url)
 
-        // ISO 21496-1 output requires Core Image to emit the modern HDRToneMap scheme, which it
-        // does precisely when the legacy Apple MakerNote headroom tags (33 & 48) are ABSENT.
-        // Strip them in case the source file carried them.
-        if var maker_apple = props[kCGImagePropertyMakerAppleDictionary as String] as? [String: Any] {
-            maker_apple["33"] = nil
-            maker_apple["48"] = nil
-            props[kCGImagePropertyMakerAppleDictionary as String] = maker_apple
-        }
+        try Task.checkCancellation()
+        let sdrBase = try await buildSDRBase(hdr: hdr, params: params, measuredHeadroom: measuredHeadroom)
 
-        // Append to Software metadata
-        var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
-        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>"
-        if let originalSoftware = tiff["Software"] as? String, !originalSoftware.isEmpty {
-            // Append to existing value
-            tiff["Software"] = "\(originalSoftware) + HDR2gainmap App v\(appVersion)"
-        } else {
-            // No existing value
-            tiff["Software"] = "HDR2gainmapApp v\(appVersion)"
-        }
-        props[kCGImagePropertyTIFFDictionary as String] = tiff
+        try Task.checkCancellation()
+        let props = exportProperties(for: params.url)
 
-        // Currently the app is not allowing for resizing -- should this change in the future, un-comment this!
-//        let extent = sdrBase.extent
-//        props[kCGImagePropertyPixelWidth as String] = Int(extent.width)
-//        props[kCGImagePropertyPixelHeight as String] = Int(extent.height)
-        
-        // RGB gain map (strada B): compute a 3-channel ISO 21496-1 gain map ourselves
-        // and assemble the HEIC by hand. Core Image emits only a luma gain map on macOS 15 (RGB is
-        // macOS 26+), so when this opt-in pref is set we bypass the Core Image embed + ISO re-encode
-        // and write the per-channel gain directly. The SDR base is identical to the mono path's —
-        // only the gain map differs.
-        if UserDefaults.standard.bool(forKey: "gainMapRGB") {
-            try writeRGBGainMapHEIC(hdr: hdr, sdrBase: sdrBase, baseProps: props, to: outputURL)
-            return
+        // RGB gain map (strada B): a 3-channel ISO 21496-1 gain map computed and assembled by us.
+        // Core Image emits only a luma gain map on macOS 15 (RGB is macOS 26+). The SDR base is the
+        // same as the mono paths' — only the gain map differs.
+        if options.rgbGainMap {
+            guard let data = encodeRGBGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: props,
+                                                      subsampleFactor: options.gainMapSubsampleFactor,
+                                                      quality: options.quality) else {
+                try Task.checkCancellation()   // nil because the export was cancelled mid-encode
+                throw ProcessingError.gainMapGenerationFailed
+            }
+            return data
         }
 
-        // Default mono path: a luma gain map we hand-assemble ourselves, with the aux color space set
-        // by us to Display P3 (see `writeMonoManualGainMapHEIC`). The Core Image mono path below —
-        // which lets Core Image compute the gain map and tag it PQ — is now an opt-in LEGACY route,
-        // selected only via the CLI flag `--mono-coreimage` (UserDefaults `gainMapMonoCoreImage`).
-        if !UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
-            try writeMonoManualGainMapHEIC(hdr: hdr, sdrBase: sdrBase, baseProps: props, to: outputURL)
-            return
+        // Default mono path: a luma gain map we hand-assemble (see `encodeMonoManualGainMapHEICData`).
+        if !options.monoCoreImage {
+            guard let data = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: props,
+                                                             subsampleFactor: options.gainMapSubsampleFactor,
+                                                             quality: options.quality) else {
+                try Task.checkCancellation()   // nil because the export was cancelled mid-encode
+                throw ProcessingError.gainMapGenerationFailed
+            }
+            return data
         }
 
-        // --- Legacy Core Image mono path (opt-in via `gainMapMonoCoreImage`) ---
-        let sdr_with_props = sdrBase.settingProperties(props)
-
-        // Read quality from UserDefaults (set in Preferences)
-        let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
-        let quality = (heicQuality > 0) ? heicQuality : 0.95  // Fallback to 0.95 if not set
-        
-        // Encode the SDR base + gain map into an in-memory HEIC. Core Image computes the (luma,
-        // monochrome) gain map from the HDR source here; we no longer pre-extract it. This buffer
-        // is the intermediate that `convertToISOGainMap` re-encodes into the ISO 21496-1 layout —
-        // keeping it in RAM saves a full disk write (the old on-disk file was written only to be
-        // re-read immediately).
-        let export_options: [CIImageRepresentationOption: Any] = [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality,
+        // --- Legacy Core Image mono path (opt-in: CLI `--mono-coreimage`) ---
+        // Core Image computes the luma gain map from the HDR source (`.hdrImage`) and embeds it in an
+        // in-memory HEIC, which `convertToISOGainMap` then re-encodes into the ISO 21496-1 layout.
+        let sdrWithProps = sdrBase.settingProperties(props)
+        let encodeOptions: [CIImageRepresentationOption: Any] = [
+            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: options.quality,
             CIImageRepresentationOption.hdrGainMapAsRGB: false,
             CIImageRepresentationOption.hdrImage: hdr
         ]
-
         let heifData: Data
         if #available(macOS 26.0, *) {
-            heifData = try encode_ctx.heif10Representation(of: sdr_with_props,
+            heifData = try encode_ctx.heif10Representation(of: sdrWithProps,
                                                            colorSpace: p3_cs,
-                                                           options: export_options)
+                                                           options: encodeOptions)
         } else {
-            guard let d = encode_ctx.heifRepresentation(of: sdr_with_props,
+            guard let d = encode_ctx.heifRepresentation(of: sdrWithProps,
                                                         format: .RGB10,
                                                         colorSpace: p3_cs,
-                                                        options: export_options) else {
+                                                        options: encodeOptions) else {
                 throw ProcessingError.gainMapGenerationFailed
             }
             heifData = d
         }
+        try Task.checkCancellation()
+        return try convertToISOGainMap(from: heifData, subsampleFactor: options.gainMapSubsampleFactor,
+                                       quality: options.quality)
+    }
 
-        // Re-encode so the gain map lands in the ISO 21496-1 auxiliary slot
-        // (kCGImageAuxiliaryDataTypeISOGainMap). ImageIO translates the HDRToneMap metadata
-        // into the standard ISO binary metadata box, recognized by Adobe's Gain Map Demo App
-        // while still rendering correctly on iOS 26 / macOS 15+. This is the only write to disk.
-        try convertToISOGainMap(from: heifData, to: outputURL)
+    /// The source file's preserved metadata, prepared for the output: legacy Apple MakerNote
+    /// headroom tags (33 & 48) stripped — ISO 21496-1 output needs Core Image to emit the modern
+    /// HDRToneMap scheme, which it does precisely when those tags are absent — and the app appended
+    /// to the TIFF `Software` tag.
+    nonisolated private func exportProperties(for url: URL) -> [String: Any] {
+        var props = extractMetadata(from: url)
 
+        if var makerApple = props[kCGImagePropertyMakerAppleDictionary as String] as? [String: Any] {
+            makerApple["33"] = nil
+            makerApple["48"] = nil
+            props[kCGImagePropertyMakerAppleDictionary as String] = makerApple
+        }
+
+        var tiff = props[kCGImagePropertyTIFFDictionary as String] as? [String: Any] ?? [:]
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>"
+        if let originalSoftware = tiff["Software"] as? String, !originalSoftware.isEmpty {
+            tiff["Software"] = "\(originalSoftware) + HDR2gainmap App v\(appVersion)"
+        } else {
+            tiff["Software"] = "HDR2gainmapApp v\(appVersion)"
+        }
+        props[kCGImagePropertyTIFFDictionary as String] = tiff
+
+        // The app does not resize; should that change, set kCGImagePropertyPixelWidth/Height here.
+        return props
     }
 
     // MARK: - ISO 21496-1 Gain Map Conversion
 
     /// Re-encode the in-memory HEIC so its gain map is stored as a standard ISO 21496-1
     /// gain map (`kCGImageAuxiliaryDataTypeISOGainMap`) instead of the Apple-proprietary
-    /// `kCGImageAuxiliaryDataTypeHDRGainMap` slot, writing the result to `url`.
+    /// `kCGImageAuxiliaryDataTypeHDRGainMap` slot, returning the re-encoded file bytes.
     ///
     /// Available on macOS 15+ via `CGImageDestination` with `kCGImageDestinationEncodeToISOGainmap`.
     /// We read back the gain map Core Image wrote (Apple HDRGainMap aux + HDRToneMap metadata),
     /// add it under the ISO aux type, and let ImageIO emit the spec-correct ISO 21496-1 binary
     /// metadata. The HDR reconstruction is preserved (verified: identical peak luminance).
     ///
-    /// `sourceData` is the HEIC Core Image just encoded in RAM, so this is the single disk write.
-    private func convertToISOGainMap(from sourceData: Data, to url: URL) throws {
+    /// `sourceData` is the HEIC Core Image just encoded in RAM; nothing touches the disk here.
+    nonisolated private func convertToISOGainMap(from sourceData: Data, subsampleFactor: Int,
+                                                 quality: Double) throws -> Data {
         guard let src = CGImageSourceCreateWithData(sourceData as CFData, nil) else {
-            throw ProcessingError.isoConversionFailed("[A] CGImageSourceCreateWithData nil for \(url.lastPathComponent)")
+            throw ProcessingError.isoConversionFailed("[A] CGImageSourceCreateWithData nil")
         }
 
         // The gain map Core Image just wrote. Where it lands depends on how it was produced:
@@ -685,24 +707,18 @@ class HDRProcessor {
                 .filter { CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, $0.1) != nil }
                 .map { $0.0 }
             let presentStr = present.isEmpty ? "none" : present.joined(separator: ",")
-            throw ProcessingError.isoConversionFailed("[B] no HDRGainMap aux readable from in-memory HEIC for \(url.lastPathComponent) (other aux present: \(presentStr))")
+            throw ProcessingError.isoConversionFailed("[B] no HDRGainMap aux readable from in-memory HEIC (other aux present: \(presentStr))")
         }
 
-        // Optionally subsample the gain map. Controlled by the `gainMapSubsampleFactor`
-        // preference (default 1 = full resolution); 2 halves it to shrink the file, at the cost
-        // of softened highlight detail (where the gain map does most of its work).
-        let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
-        let subsampleFactor = storedFactor > 0 ? storedFactor : 1
+        // Optionally subsample the gain map (`ExportOptions.gainMapSubsampleFactor`: 1 = full
+        // resolution, 2 halves it to shrink the file at the cost of softened highlight detail).
         if subsampleFactor > 1, let smaller = downsampleGainMapAux(auxDict, factor: subsampleFactor) {
             auxDict = smaller
         }
 
         guard let base = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw ProcessingError.isoConversionFailed("[C] CGImageSourceCreateImageAtIndex nil for \(url.lastPathComponent)")
+            throw ProcessingError.isoConversionFailed("[C] CGImageSourceCreateImageAtIndex nil")
         }
-
-        let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
-        let quality = (heicQuality > 0) ? heicQuality : 0.95
 
         // Carry over the original image properties (Exif/TIFF/GPS/…) and request ISO encoding.
         var imgProps = (CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [String: Any]) ?? [:]
@@ -710,12 +726,7 @@ class HDRProcessor {
         imgProps[kCGImageDestinationLossyCompressionQuality as String] = quality
 
         let utType = CGImageSourceGetType(src) ?? ("public.heic" as CFString)
-        // Encode in memory, then write the bytes to the user-chosen `url` with a NON-ATOMIC write.
-        // Both CGImageDestinationCreateWithURL and an atomic write safe-save via a sibling temp
-        // (`<name>.sb-xxxxxx`) in the destination *directory*, which a file-scoped NSSavePanel grant
-        // doesn't permit → ImageIO "cannot create … Operation not permitted". A non-atomic write
-        // opens the exact granted path, so single "Export Current Image" to ~/Desktop works (and so
-        // does output on an external volume — no cross-device move involved).
+        // Encode in memory; `export(params:…)` writes the bytes (see there for the sandbox rationale).
         let buffer = NSMutableData()
         guard let dst = CGImageDestinationCreateWithData(buffer as CFMutableData, utType, 1, nil) else {
             throw ProcessingError.isoConversionFailed("[D] CGImageDestinationCreateWithData nil, utType=\(utType)")
@@ -725,57 +736,15 @@ class HDRProcessor {
         guard CGImageDestinationFinalize(dst) else {
             throw ProcessingError.isoConversionFailed("[G] CGImageDestinationFinalize returned false")
         }
-        do {
-            try (buffer as Data).write(to: url, options: [])
-        } catch {
-            throw ProcessingError.isoConversionFailed("[I] write to \(url.lastPathComponent): \(error)")
-        }
+        return buffer as Data
     }
     
     
-    /// Downsample a gain-map auxiliary dictionary by an integer `factor`, returning a new
-    /// dictionary with the resized pixel buffer and an updated data description. Only handles
-    /// the 8-bit single-channel (`L008`) gain maps this pipeline produces; returns nil for
-    /// anything else (caller then embeds the gain map unchanged).
-    // MARK: - RGB Gain Map (opt-in via `gainMapRGB`)
-
-    /// Build a 3-channel (RGB) ISO 21496-1 gain map ourselves and assemble the HEIC by hand,
-    /// writing it to `url`. Core Image only emits a luma gain map on macOS 15 (RGB is macOS 26+),
-    /// so instead of asking it to compute/embed the gain map we render the per-channel gain, build
-    /// the `ChannelMetadata` XMP, and attach the payload via `CGImageDestinationAddAuxiliaryDataInfo`
-    /// with the ISO gain map aux type. `sdrBase` is the same tone-mapped base the mono path uses —
-    /// only the gain map differs. `baseProps` carries the preserved Exif/TIFF/GPS (MakerApple 33/48
-    /// already stripped by the caller). Verified on macOS 15 Intel (reconstructs in Core Image and
-    /// validates in Adobe's Gain Map Demo App).
-    private func writeRGBGainMapHEIC(hdr: CIImage, sdrBase: CIImage,
-                                     baseProps: [String: Any], to url: URL) throws {
-        let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
-        let quality = (heicQuality > 0) ? heicQuality : 0.95
-
-        // Subsample the gain map per the shared preference (default 2). Computing it at reduced
-        // resolution both honors the setting and cuts the per-pixel CPU cost; a gain map is
-        // smooth/low-detail so the visual impact is minimal. (`downsampleGainMapAux` is L008-only,
-        // so the RGB path can't reuse it — we subsample at compute time instead.)
-        let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
-        let subsampleFactor = storedFactor > 0 ? storedFactor : 1
-
-        guard let data = encodeRGBGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: baseProps,
-                                                  subsampleFactor: subsampleFactor, quality: quality) else {
-            throw ProcessingError.gainMapGenerationFailed
-        }
-
-        // Non-atomic write to the user-chosen `url` (carries the NSSavePanel grant). An atomic write /
-        // CGImageDestinationCreateWithURL safe-saves via a sibling temp in the destination *directory*,
-        // which a file-scoped grant doesn't cover — EPERM for single "Export Current Image" to ~/Desktop.
-        do {
-            try data.write(to: url, options: [])
-        } catch {
-            throw ProcessingError.isoConversionFailed("[RGB-C] write to \(url.lastPathComponent): \(error)")
-        }
-    }
+    // MARK: - RGB Gain Map (`ExportOptions.rgbGainMap`)
 
     /// Encode the SDR base + a 3-channel (RGB) ISO 21496-1 gain map into an in-memory HEIC `Data`.
-    /// Shared by the RGB exporter (`writeRGBGainMapHEIC`) and the RGB `.finalOutput` preview, so both
+    /// Core Image only emits a luma gain map on macOS 15 (RGB is macOS 26+), so we compute the
+    /// per-channel gain ourselves. Shared by the export and the RGB `.finalOutput` preview, so both
     /// reconstruct from the exact same bytes. Core Image only emits a luma gain map on macOS 15 (RGB
     /// is macOS 26+), so we render the per-channel gain, build the `ChannelMetadata` XMP, and attach
     /// the payload via `CGImageDestinationAddAuxiliaryDataInfo` with the ISO gain map aux type.
@@ -785,8 +754,10 @@ class HDRProcessor {
                                                       subsampleFactor: Int, quality: Double) -> Data? {
         guard let gm = computeRGBGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else { return nil }
         guard let meta = isoGainMapMetadata(channels: 3, gainMapMaxStops: gm.gainMapMaxStops) else { return nil }
+        if Task.isCancelled { return nil }   // callers report this as a CancellationError
         guard let baseCG = encode_ctx.createCGImage(sdrBase, from: sdrBase.extent,
                                                     format: .RGB10, colorSpace: p3_cs) else { return nil }
+        if Task.isCancelled { return nil }
 
         let desc: [String: Any] = [
             "PixelFormat": Int(kCVPixelFormatType_32ARGB),
@@ -839,6 +810,7 @@ class HDRProcessor {
         let rect = CGRect(x: 0, y: 0, width: w, height: h)
         encode_ctx.render(hdrS, toBitmap: &hdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
         encode_ctx.render(sdrS, toBitmap: &sdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
+        if Task.isCancelled { return nil }
 
         var picHeadroom: Float = 1.0
         for i in stride(from: 0, to: w * h * 4, by: 4) {
@@ -865,46 +837,21 @@ class HDRProcessor {
         return (Data(argb), w, h, gmaxStops)
     }
 
-    // MARK: - Manual mono gain map (DEFAULT mono path; Display P3)
-
-    /// Build a luma (monochrome) ISO 21496-1 gain map ourselves and assemble the HEIC by hand,
-    /// writing it to `url`. Same road as `writeRGBGainMapHEIC` — we render the gain, attach the aux
-    /// via `CGImageDestinationAddAuxiliaryDataInfo` — but a single luma channel, and crucially WITH
-    /// the aux color space set by us (Display P3) instead of letting Core Image pick it (the legacy
-    /// Core Image mono path ends up tagged PQ). This is now the DEFAULT for monochrome gain maps in
-    /// both the GUI and the CLI; the Core Image path is opt-in via `--mono-coreimage`. `sdrBase` is
-    /// the same tone-mapped base the other paths use — only the gain map differs.
-    private func writeMonoManualGainMapHEIC(hdr: CIImage, sdrBase: CIImage,
-                                            baseProps: [String: Any], to url: URL) throws {
-        let heicQuality = UserDefaults.standard.double(forKey: "heicExportQuality")
-        let quality = (heicQuality > 0) ? heicQuality : 0.95
-
-        let storedFactor = UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor")
-        let subsampleFactor = storedFactor > 0 ? storedFactor : 1
-
-        guard let data = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: baseProps,
-                                                         subsampleFactor: subsampleFactor, quality: quality) else {
-            throw ProcessingError.gainMapGenerationFailed
-        }
-
-        // Non-atomic write to the granted `url` (same sandbox rationale as `writeRGBGainMapHEIC`).
-        do {
-            try data.write(to: url, options: [])
-        } catch {
-            throw ProcessingError.isoConversionFailed("[MONO-C] write to \(url.lastPathComponent): \(error)")
-        }
-    }
+    // MARK: - Manual mono gain map (DEFAULT mono path)
 
     /// Encode the SDR base + a single-channel (luma) ISO 21496-1 gain map into an in-memory HEIC
-    /// `Data`. Mirrors `encodeRGBGainMapHEICData` but emits an `L008` (8-bit, 1-channel) aux and tags
-    /// it Display P3 (`p3_cs`) ourselves, with 1-channel `ChannelMetadata`.
+    /// `Data`. Mirrors `encodeRGBGainMapHEICData` but emits an `L008` (8-bit, 1-channel) aux, tagged by
+    /// us (`gainmap_cs`, ITUR_2100_PQ — see there) instead of letting Core Image pick, with 1-channel
+    /// `ChannelMetadata`. The DEFAULT monochrome path in GUI and CLI; the Core Image one is opt-in.
     nonisolated private func encodeMonoManualGainMapHEICData(hdr: CIImage, sdrBase: CIImage,
                                                              baseProps: [String: Any],
                                                              subsampleFactor: Int, quality: Double) -> Data? {
         guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else { return nil }
         guard let meta = isoGainMapMetadata(channels: 1, gainMapMaxStops: gm.gainMapMaxStops) else { return nil }
+        if Task.isCancelled { return nil }   // callers report this as a CancellationError
         guard let baseCG = encode_ctx.createCGImage(sdrBase, from: sdrBase.extent,
                                                     format: .RGB10, colorSpace: p3_cs) else { return nil }
+        if Task.isCancelled { return nil }
 
         let desc: [String: Any] = [
             "PixelFormat": Int(kCVPixelFormatType_OneComponent8),   // 'L008' = 8-bit single-channel luma
@@ -954,6 +901,7 @@ class HDRProcessor {
         let rect = CGRect(x: 0, y: 0, width: w, height: h)
         encode_ctx.render(hdrS, toBitmap: &hdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
         encode_ctx.render(sdrS, toBitmap: &sdrBuf, rowBytes: w * 16, bounds: rect, format: .RGBAf, colorSpace: linear_p3)
+        if Task.isCancelled { return nil }
 
         // Display-P3 / D65 luminance weights (shared with the headroom / CDF / histogram analysis).
         let (wr, wg, wb) = Constants.displayP3LumaWeights
@@ -1015,7 +963,11 @@ class HDRProcessor {
         return CGImageMetadataCreateFromXMPData(data as CFData)
     }
 
-    private func downsampleGainMapAux(_ aux: [String: Any], factor: Int) -> [String: Any]? {
+    /// Downsample a gain-map auxiliary dictionary by an integer `factor`, returning a new
+    /// dictionary with the resized pixel buffer and an updated data description. Only handles
+    /// the 8-bit single-channel (`L008`) gain maps Core Image produces; returns nil for anything
+    /// else (caller then embeds the gain map unchanged).
+    nonisolated private func downsampleGainMapAux(_ aux: [String: Any], factor: Int) -> [String: Any]? {
         guard factor > 1,
               let data = aux[kCGImageAuxiliaryDataInfoData as String] as? Data,
               let desc = aux[kCGImageAuxiliaryDataInfoDataDescription as String] as? [String: Any],
@@ -1058,7 +1010,7 @@ class HDRProcessor {
     // MARK: - Metadata Extraction
 
     /// Extracts EXIF/IPTC/TIFF metadata from cache (zero disk I/O)
-    private func extractMetadata(from url: URL) -> [String: Any] {
+    nonisolated private func extractMetadata(from url: URL) -> [String: Any] {
         let key = url as NSURL
         
         // 1) Prova RawPixelData cache (ha i metadata)
@@ -1076,7 +1028,7 @@ class HDRProcessor {
     }
     
     /// Filters only metadata to preserve
-    private func filterMetadataForPreservation(_ properties: [String: Any]) -> [String: Any] {
+    nonisolated private func filterMetadataForPreservation(_ properties: [String: Any]) -> [String: Any] {
         var metadata: [String: Any] = [:]
         
         // Lista di chiavi da preservare (aggiorna dopo aver usato lo script)
@@ -1817,6 +1769,7 @@ class HDRProcessor {
             // preview matches the file. Subsample to match the export; quality 1.0 for a fidelity view.
             guard let d = encodeRGBGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: [:],
                                                    subsampleFactor: subsampleFactor, quality: 1.0) else {
+                try Task.checkCancellation()
                 throw ProcessingError.gainMapGenerationFailed
             }
             data = d
@@ -1838,6 +1791,7 @@ class HDRProcessor {
             // Default: hand-assembled luma gain map (Display P3) — same bytes the exporter writes.
             guard let d = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: [:],
                                                           subsampleFactor: subsampleFactor, quality: 1.0) else {
+                try Task.checkCancellation()
                 throw ProcessingError.gainMapGenerationFailed
             }
             data = d
@@ -1867,6 +1821,7 @@ class HDRProcessor {
         }
         if UserDefaults.standard.bool(forKey: "gainMapRGB") {
             guard let gm = computeRGBGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else {
+                try Task.checkCancellation()
                 throw ProcessingError.gainMapGenerationFailed
             }
             let img = CIImage(bitmapData: gm.data,
@@ -1880,6 +1835,7 @@ class HDRProcessor {
             // Default: visualize our hand-assembled luma gain map. Expand the L008 bytes into ARGB8
             // gray (R=G=B=gain, A=255) so we can build the CIImage with the same .ARGB8 path as RGB.
             guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else {
+                try Task.checkCancellation()
                 throw ProcessingError.gainMapGenerationFailed
             }
             var argb = [UInt8](repeating: 0, count: gm.width * gm.height * 4)

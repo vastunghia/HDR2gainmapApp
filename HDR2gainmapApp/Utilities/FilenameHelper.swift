@@ -24,4 +24,17 @@ struct FilenameHelper {
         
         return "\(baseName)\(finalSuffix).\(ext)"
     }
+
+    /// The output names that more than one entry of `names` would produce — e.g. `photo.png` and
+    /// `photo.tif` both export to `photo.heic`. Compared case-insensitively, as on the default
+    /// (case-insensitive) APFS/HFS+ volumes, where `Photo.heic` and `photo.heic` are the same file.
+    /// Returns the colliding names lowercased.
+    static func collidingNames(_ names: [String]) -> Set<String> {
+        var seen = Set<String>(), colliding = Set<String>()
+        for name in names {
+            let key = name.lowercased()
+            if !seen.insert(key).inserted { colliding.insert(key) }
+        }
+        return colliding
+    }
 }
