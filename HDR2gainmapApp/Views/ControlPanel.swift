@@ -149,7 +149,7 @@ struct TonemapControlsSection: View {
                         }
                         .controlSize(.small)
                         .disabled(!viewModel.isCurrentImageValid || viewModel.isExporting)
-                        .help("Find the lowest source headroom keeping per-channel clipping within the tolerance set in Preferences")
+                        .help("Find the lowest source headroom keeping per-channel clipping within the tolerance set in Settings")
 
                         Button("Auto all") {
                             viewModel.autoTuneAllImages()

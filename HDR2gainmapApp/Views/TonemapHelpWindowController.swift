@@ -113,7 +113,7 @@ struct TonemapHelpView: View {
                     Auto picks the Source Headroom for you. It searches for the **lowest** Source \
                     Headroom that still keeps clipping within a small tolerance — specifically the \
                     fraction of pixels clipped in **any single R/G/B channel**, capped at the \
-                    *per-channel clip tolerance* set in Preferences (default 1%).
+                    *per-channel clip tolerance* set in Settings (default 1%).
 
                     Working per channel (rather than overall) curbs single-channel clipping — for \
                     example a clipped red channel that would otherwise tint the highlights. A lower \

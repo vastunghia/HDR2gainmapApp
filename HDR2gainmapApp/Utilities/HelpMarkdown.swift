@@ -113,26 +113,37 @@ enum HelpMarkdownParser {
                 continue
             }
 
-            // Ordered list (collect consecutive `N.` lines).
+            // Ordered list (collect consecutive `N.` lines; indented lines continue the item).
             if isOrderedItem(line) {
                 var items: [String] = []
                 while index < lines.count {
                     let l = lines[index].trimmingCharacters(in: .whitespaces)
-                    guard isOrderedItem(l) else { break }
-                    items.append(stripOrderedMarker(l))
+                    if isOrderedItem(l) {
+                        items.append(stripOrderedMarker(l))
+                    } else if !items.isEmpty, isItemContinuation(lines[index], trimmed: l) {
+                        items[items.count - 1] += " " + decodeEntities(l)
+                    } else {
+                        break
+                    }
                     index += 1
                 }
                 blocks.append(.ordered(items))
                 continue
             }
 
-            // Bulleted list (collect consecutive `-`/`*`/`+`/`•` lines).
+            // Bulleted list (collect consecutive `-`/`*`/`+`/`•` lines; indented lines continue the
+            // item, so a bullet wrapped over several source lines stays one item).
             if isBulletItem(line) {
                 var items: [String] = []
                 while index < lines.count {
                     let l = lines[index].trimmingCharacters(in: .whitespaces)
-                    guard isBulletItem(l) else { break }
-                    items.append(stripBulletMarker(l))
+                    if isBulletItem(l) {
+                        items.append(stripBulletMarker(l))
+                    } else if !items.isEmpty, isItemContinuation(lines[index], trimmed: l) {
+                        items[items.count - 1] += " " + decodeEntities(l)
+                    } else {
+                        break
+                    }
                     index += 1
                 }
                 blocks.append(.bulleted(items))
@@ -144,7 +155,7 @@ enum HelpMarkdownParser {
             while index < lines.count {
                 let l = lines[index].trimmingCharacters(in: .whitespaces)
                 if l.isEmpty || l.hasPrefix("#") || l.hasPrefix(">") || l.hasPrefix("```")
-                    || l.hasPrefix("<") || isBulletItem(l) || isOrderedItem(l)
+                    || l.hasPrefix("<") || isStrippableHTML(l) || isBulletItem(l) || isOrderedItem(l)
                     || l == "---" || parseImage(l) != nil {
                     break
                 }
@@ -190,6 +201,16 @@ enum HelpMarkdownParser {
         return .image(file: file, alt: decodeEntities(alt))
     }
 
+    /// A wrapped line of the list item above it: indented, non-empty, and not the start of another
+    /// block (a nested list item, a code fence, a quote, an image, HTML). `trimmed` is `raw` without
+    /// surrounding whitespace.
+    private static func isItemContinuation(_ raw: String, trimmed: String) -> Bool {
+        guard let first = raw.first, first == " " || first == "\t", !trimmed.isEmpty else { return false }
+        return !isBulletItem(trimmed) && !isOrderedItem(trimmed)
+            && !trimmed.hasPrefix("```") && !trimmed.hasPrefix(">") && !trimmed.hasPrefix("<")
+            && !trimmed.hasPrefix("#") && parseImage(trimmed) == nil
+    }
+
     private static func isBulletItem(_ line: String) -> Bool {
         line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") || line.hasPrefix("• ")
     }
@@ -225,7 +246,9 @@ enum HelpMarkdownParser {
         for tag in tags {
             if l.hasPrefix(tag) { return true }
         }
-        return false
+        // An HTML <img> anywhere on the line is decoration (the "Now with…" banner wraps one in
+        // emoji); real screenshots use Markdown `![alt](path)` and are handled separately.
+        return l.contains("<img ")
     }
 
     private static func consumeSummary(_ lines: [String], _ index: inout Int) -> String {

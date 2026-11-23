@@ -5,7 +5,7 @@
 <h1 align="center">HDR2gainmap App</h1>
 
 <p align="center">
-  <b>Take full creative control of your HDR photos and export them as gain-map HEICs that look right everywhere — iPhone, Mac, iCloud, and the web.</b>
+  <b>Take full creative control of your HDR photos and export them as gain-map HEICs that look right across your Apple devices — iPhone, iPad, Mac, iCloud and Safari.</b>
 </p>
 
 <p align="center">
@@ -27,7 +27,7 @@
 
 ## The problem
 
-Modern Apple devices and most web browsers can show **true HDR photos** using a *gain map*: an SDR
+Modern Apple devices can show **true HDR photos** using a *gain map*: an SDR
 base image plus a recipe to reconstruct the HDR rendition on capable displays. The catch is getting
 there. Export HDR from your editor and you typically end up with one of two bad outcomes — a flat SDR
 file that throws away your highlights, or an HDR file whose gain map gets **stripped the moment it
@@ -48,8 +48,9 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
   display as true HDR across their devices.
 - **Anyone in the Apple ecosystem** who needs HDR photos that sync through iCloud without losing the
   gain map, and render correctly in Photos, Preview, Safari, and QuickLook.
-- **People who care about cross-platform compatibility** — output also works in standards-compliant
-  non-Apple software (most modern browsers) thanks to ISO 21496-1 gain maps.
+- **People who care about standards** — the gain map follows ISO 21496-1 rather than a proprietary
+  Apple scheme, so non-Apple software that reads HEIC and supports ISO gain maps (e.g. Adobe's Gain
+  Map Demo App) shows it too.
 - **Anyone who wants the SDR base to look good**, not just the HDR — with precise, visual control
   over tone-mapping instead of a black-box automatic conversion.
 
@@ -70,8 +71,8 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
   ecosystem *and* by standards-compliant non-Apple software, with original metadata preserved.
 - **📊 Lightroom-style histograms** — split-axis HDR/SDR histograms with always-on clipping
   statistics and an interactive clipping legend.
-- **🗂️ Batch-friendly** — batch export with progress tracking, plus per-image tone-mapping parameter
-  profiles you can save and re-open to resume work or share a look across machines.
+- **🗂️ Batch-friendly** — batch export with progress tracking; every image's tone-mapping parameters
+  are saved automatically, and can also be saved to a profile to share a look or move to another Mac.
 - **⌨️ Command-line tool included** — a companion CLI (`HDR2gainmapCLI`) runs the same conversion
   engine headlessly, for scripting and batch automation.
 
@@ -103,7 +104,8 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 
 - **Three tone-mapping control methods** for precise control over SDR rendering (more info below):
   - **Peak Max**: Most intuitive, high-level control.
-  - **Percentile**: Lets you control directly how many pixels will be clipped in the final SDR image.
+  - **Percentile**: Sets the headroom by luminance percentile, e.g. so that the brightest 0.1% of
+    pixels lie above it.
   - **Direct**: Low-level control allowing you to manually select source / target headroom.
 
 </details>
@@ -123,8 +125,8 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 <details>
 <summary><b>Workflow &amp; navigation</b></summary>
 
-- **Batch export** with progress tracking and the option to append a string of your choice to all
-  file names; the running batch can be **cancelled** at any time (it stops promptly — the image being
+- **Batch export** with progress tracking and an optional per-image filename suffix (one click applies
+  it to every image); the running batch can be **cancelled** at any time (it stops promptly — the image being
   processed is not written — and a summary reports what was done). Exports run in the background, so
   the app stays responsive; an existing output file is only replaced once the new one has been fully
   encoded, so a failed or cancelled export never destroys a previous one. Two images that would
@@ -167,8 +169,10 @@ Where does the output work?
   - iOS and iPadOS (Photos, Files, Safari)
   - iCloud Photo Library (sync will **not** strip gain maps, unlike many other methods)
   - any app that uses Apple's native image rendering pipeline
-- **Non-Apple software** — any software implementing the ISO 21496 specification for gain maps (e.g.
-  most browsers at the time of writing).
+- **Non-Apple software** — software that reads HEIC *and* implements ISO 21496-1 gain maps (e.g.
+  Adobe's Gain Map Demo App, see [Verifying Output](#verifying-output)).
+- **Web browsers** — Safari only. Chrome and Firefox do not open HEIC files at all (their gain-map
+  support covers JPEG and AVIF), so for the web the image has to be converted to one of those formats.
 
 ## Input Format Requirements
 
@@ -176,7 +180,8 @@ The application accepts **HDR PNG and TIFF files** with the following specificat
 
 - **Transfer function**: PQ (Perceptual Quantizer / ST.2084) or HLG — i.e. any ITU-R BT.2100 HDR transfer
 - **Color Space**: wide-gamut (e.g. Display P3 or BT.2020); other primaries are converted automatically
-- **Bit Depth**: 16-bit per channel (required for HDR encoding)
+- **Bit Depth**: 16-bit per channel (what HDR editors export; 8-bit files are not rejected, but 8 bits
+  are too few for a PQ/HLG curve and band visibly)
 - **Channels**: RGB or RGBA
 - **File Extensions**: `.png`, `.tif`, `.tiff`
 
@@ -222,22 +227,30 @@ The three methods below are simply three ways to arrive at a Source Headroom val
 
 ![HDR2gainmap App Screenshot - Peak Max Slider](screenshots/screenshot_slider_peakmax.png)
 
-- Derives source headroom using the formula: `1 + measuredHeadroom - measuredHeadroom^ratio`
-- The slider controls the `ratio` parameter (0.0 = no compression, 1.0 = full compression to SDR)
+- Derives source headroom from the measured headroom `H` and the slider value `r`:
+  `sourceHeadroom = 1 + H − H^(1 − r)`
+- `r` = 0.0 → source headroom 1 (no compression: everything brighter than SDR white clips);
+  `r` = 1.0 → source headroom `H` (full compression: the whole range is squeezed into SDR); default 0.8
 - Provides intuitive creative control over highlight roll-off
 
-**In a nutshell:** drag to the left to 'crunch' all pixels into the SDR space; drag to the right to leave pixels as they are, ending up with all original pixels brighter than standard white being clipped in the final SDR image.
+**In a nutshell:** drag to the right to 'crunch' all pixels into the SDR space; drag to the left to leave pixels as they are, ending up with all original pixels brighter than standard white being clipped in the final SDR image.
 
 **Percentile**
 
 ![HDR2gainmap App Screenshot - Percentile Slider](screenshots/screenshot_slider_percentile.png)
 
 - Builds a cumulative distribution function (CDF) from the image's luminance histogram
-- Derives source headroom from a user-selected percentile (e.g., 99.9% = top 0.1% of pixels)
+- Sets source headroom to the luminance at a user-selected percentile (e.g. at 99.9%, the default,
+  the brightest 0.1% of pixels by luminance lie above it)
 - Robust against outliers and specular highlights
 - Uses a non-linear slider mapping for precise control in the 95-99.999% range
 
-**In a nutshell:** lets you specify the percentage of pixels that should result as clipped in the final SDR image. Drag to the left to force 0.001% of pixels clipped, drag to the right to force 5% of pixels clipped.
+**In a nutshell:** picks the headroom by how many of the brightest pixels you are willing to sacrifice. Drag to the left (95%) to let the brightest 5% of pixels exceed it — a brighter SDR base, more clipping; drag to the right (99.999%) to keep all but the brightest 0.001% within it — a darker, more faithful base.
+
+> The percentile ranks pixels by **luminance**, while a pixel counts as clipped as soon as **any one
+> channel** reaches white — so the share of clipped pixels in the SDR base is usually larger than
+> 100% minus the percentile, especially in saturated highlights (on one of our test images, 99.9% left
+> about 0.75% of pixels clipped). Check the clipping readout under the histograms for the real figure.
 
 **Direct**
 
@@ -314,7 +327,8 @@ all of which update live (debounced) as you move the tone-mapping sliders:
   is being encoded.
 - **SDR + Gain Map (Final Output)** — the HDR rendition *reconstructed from the SDR base and the gain
   map*, i.e. what the exported HEIC will actually look like on an HDR display. This is rebuilt in
-  memory from the same encoder used for export, so it faithfully previews the final result.
+  memory from the same encoder used for export, so it faithfully previews the final result (encoded
+  at maximum quality, so it does not show the compression of a lower HEIC Quality setting).
 
 ### True HDR (EDR) preview
 
@@ -411,7 +425,7 @@ A **Reset defaults** button at the bottom restores every option above to its def
 
 ## System Requirements
 
-- **macOS 15.x** (Sequoia) or later
+- **macOS 15.0** (Sequoia) or later — app and command-line tool alike
 - **Tested on**: macOS 15.x on both Intel and Apple Silicon, and macOS 26.x on Apple Silicon
   (export + gain-map validation run on all three in CI)
 
@@ -455,8 +469,10 @@ If you'd rather avoid this entirely, [build from source](#clone-and-build) and r
 
 ### Prerequisites
 
-- Xcode 16.0 or later
-- macOS 15.0 SDK or later
+- Xcode 26 or later (the code uses Swift 6.2 concurrency features and the macOS 26 SDK; the
+  resulting app still runs on macOS 15)
+- The Metal toolchain, which Xcode 26 installs separately: if the build fails with *missing Metal
+  Toolchain*, run `xcodebuild -downloadComponent MetalToolchain`
 
 ### Clone and Build
 ```bash
@@ -508,7 +524,8 @@ The overlay uses a **multi-color scheme** to identify which channels are clipped
 - **Primary colors** (Red, Green, Blue): Single channel clipping
 - **Secondary colors** (Yellow, Magenta, Cyan): Two-channel clipping
 - **Dim variants** (50% intensity): Channel clipping with luminance also at white
-- **Black**: All three channels clipped (maxRGB at the SDR white ceiling)
+- **Black**: All three channels clipped (maxRGB at the SDR white ceiling) — listed as *White (R+G+B)*
+  in the legend window, which follows the additive color model
 
 This allows precise diagnosis of clipping issues across the color gamut. A **Clipped Pixel Overlay
 Opacity** slider (by the histograms) fades the overlay from fully opaque down to hidden, so you can
@@ -540,7 +557,6 @@ The application leverages Metal compute shaders for performance-critical operati
   percentile CDF together. Because it reads the decoded image rather than the file's encoded samples,
   these are correct for PQ and HLG inputs alike, and for any source primaries.
 - **SDR histogram**: computed on the GPU from the tone-mapped SDR base.
-- **Percentile CDF**: cached per image for real-time slider response.
 
 Metal acceleration is automatically detected and enabled when available, with graceful CPU fallback.
 
@@ -550,16 +566,16 @@ The application implements multiple cache layers for performance:
 
 - **CIImage cache**: Loaded HDR images (linear Display P3)
 - **Source decode cache**: each decoded input file plus its metadata, so the linear image can be rebuilt without re-reading the disk
-- **Measurement caches**: measured headroom, percentile CDF and HDR histogram per image
+- **Measurement caches**: measured headroom, percentile CDF and HDR histogram per image (the CDF is
+  the lookup table behind the real-time Percentile slider)
 - **Preview cache**: Separate caches for base SDR and overlay variants
-- **Percentile CDF cache**: Pre-computed lookup tables for real-time slider response
 - **Metadata cache**: Image headers to avoid redundant disk I/O
 
 ### Navigation & Pre-loading
 
 Selecting an image first switches the preview, then warms its neighbours (next and previous) in the background on a low-priority, cancellable task — so moving through a folder with the thumbnail bar or the ←/→ arrow keys is near-instant. The heavy work (image loading, tone-mapping, histograms, export) runs off the main thread, keeping the interface responsive.
 
-The ⚡️ badge on a thumbnail reflects whether that image's pixel data is currently held in the in-memory cache (raw bytes or loaded image), so you can see at a glance which images will open instantly. Because the caches are bounded, distant images are eventually evicted to free memory, and the badge disappears accordingly — a lightweight poll keeps the badges in sync in real time.
+The ⚡️ badge on a thumbnail reflects whether that image's pixel data is currently held in the in-memory cache (decoded source file or loaded image), so you can see at a glance which images will open instantly. Because the caches are bounded, distant images are eventually evicted to free memory, and the badge disappears accordingly — a lightweight poll keeps the badges in sync in real time.
 
 ## License
 
