@@ -125,6 +125,8 @@ struct MainInterfaceView: View {
     /// must re-render them.
     @AppStorage("gainMapRGB") private var gainMapRGB = true
     @AppStorage("gainMapSubsampleFactor") private var gainMapSubsampleFactor = 1
+    @AppStorage(ReconstructionErrorMetric.defaultsKey) private var reconstructionErrorMetric =
+        ReconstructionErrorMetric.worstChannel.rawValue
     @State private var showComparisonHelp = false
 
     /// A preview-mode chip — identical in both modes. In Single it's tappable (selected highlighted);
@@ -205,12 +207,19 @@ struct MainInterfaceView: View {
                     // Display-headroom readout. Always shown so the layout doesn't jump; the numbers
                     // read "n/a" in the non-EDR views (SDR / Gain Map), where EDR isn't used. It's a
                     // display property, not an image one, so it lives here, not in the MetadataBar.
-                    EDRHeadroomIndicator(active: viewModel.isComparison
-                        ? (viewModel.comparisonLeftMode.isHDR || viewModel.comparisonRightMode.isHDR)
-                        : viewModel.previewMode.isHDR)
-                        .padding(.horizontal, 12)
-                        .padding(.top, 6)
-                        .padding(.bottom, 6)
+                    // With the Reconstruction Error view on screen, its controls share the row.
+                    HStack(spacing: 12) {
+                        EDRHeadroomIndicator(active: viewModel.isComparison
+                            ? (viewModel.comparisonLeftMode.isHDR || viewModel.comparisonRightMode.isHDR)
+                            : viewModel.previewMode.isHDR)
+                        if viewModel.isShowingReconstructionError {
+                            ReconstructionErrorControls(stats: viewModel.reconstructionErrorStats)
+                        }
+                    }
+                    .frame(minHeight: 22)
+                    .padding(.horizontal, 12)
+                    .padding(.top, 6)
+                    .padding(.bottom, 6)
 
                     Divider()
 
@@ -269,6 +278,9 @@ struct MainInterfaceView: View {
             // picks the right variant. Covers single and Compare views and shows the loading spinner.
             .onChange(of: gainMapRGB) { viewModel.refreshAfterGainMapSettingChange() }
             .onChange(of: gainMapSubsampleFactor) { viewModel.refreshAfterGainMapSettingChange() }
+            // The Reconstruction Error metric (picker under the view chips) is folded into that view's
+            // cache key the same way.
+            .onChange(of: reconstructionErrorMetric) { viewModel.refreshAfterGainMapSettingChange() }
         }
     }
 }

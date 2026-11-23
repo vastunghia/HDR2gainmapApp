@@ -63,8 +63,8 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
   colors, not just a single luminance curve — and now the default (a monochrome gain map is still
   available).
 - **👁️ See every stage, live** — a multi-view preview switches between **HDR Input**, **Tonemapped
-  SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)**, all updating in real time as you drag
-  the sliders. A draggable **comparison slider** wipes between any two views.
+  SDR**, **Gain Map**, **SDR + Gain Map (Final Output)** and **Reconstruction Error**, all updating in
+  real time as you drag the sliders. A draggable **comparison slider** wipes between any two views.
 - **🌟 True HDR (EDR) preview** — on HDR-capable displays, highlights are shown with real headroom,
   with a live readout of how much display headroom you currently have (in stops).
 - **📦 Standards-based, sync-safe output** — **ISO 21496-1 gain maps** recognized across the Apple
@@ -81,12 +81,13 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
 <details>
 <summary><b>Preview &amp; inspection</b></summary>
 
-- **Multi-view preview**: switch the preview between four live views — **HDR Input**, **Tonemapped
-  SDR**, **Gain Map**, and **SDR + Gain Map (Final Output)** — to inspect the HDR source, your SDR
-  base, the gain map itself, and the *actual reconstructed export* before you write a single file.
+- **Multi-view preview**: switch the preview between five live views — **HDR Input**, **Tonemapped
+  SDR**, **Gain Map**, **SDR + Gain Map (Final Output)** and **Reconstruction Error** — to inspect the
+  HDR source, your SDR base, the gain map itself, the *actual reconstructed export*, and where that
+  export departs from the original, before you write a single file.
 - **True HDR (EDR) preview** on HDR-capable displays, with a live **Display Headroom (current /
   potential)** readout in stops, so you can judge highlights as they will really appear.
-- **Image comparison slider**: place any two of the four views side by side with a draggable divider
+- **Image comparison slider**: place any two of the views side by side with a draggable divider
   (e.g. *HDR Input* vs *Final Output*) to spot differences directly.
 - **Pixel-peeping zoom** (100 % / 200 % / 400 %, configurable) with click-to-zoom and drag-to-pan,
   available in every view.
@@ -313,12 +314,12 @@ The export and preview options (quality, gain map resolution, RGB vs monochrome,
 Crafting a good gain map is an iterative, visual process, so the app lets you inspect every stage of
 the conversion in real time — not just the SDR base.
 
-### Four live views
+### Five live views
 
-A segmented selector at the top of the preview column switches the main preview between four views,
+A row of view buttons at the top of the preview column switches the main preview between five views,
 all of which update live (debounced) as you move the tone-mapping sliders:
 
-![HDR2gainmap App Screenshot - Preview mode switch and the four available previews](screenshots/screenshot_preview_modes.png)
+![HDR2gainmap App Screenshot - Preview mode switch and the available previews](screenshots/screenshot_preview_modes.png)
 
 - **HDR Input** — the original HDR source, rendered in true HDR on capable displays (see EDR below).
 - **Tonemapped SDR** — the SDR base image, with the multi-color clipped-pixel overlay (opacity
@@ -329,6 +330,18 @@ all of which update live (debounced) as you move the tone-mapping sliders:
   map*, i.e. what the exported HEIC will actually look like on an HDR display. This is rebuilt in
   memory from the same encoder used for export, so it faithfully previews the final result (encoded
   at maximum quality, so it does not show the compression of a lower HEIC Quality setting).
+- **Reconstruction Error** — a heatmap of the difference between the HDR Input and the Final Output,
+  drawn over a dimmed grayscale of the image, so you can see where the exported file departs from the
+  original and by how much. Two measures, picked next to the view buttons:
+  - **Worst Channel** — the largest error among R, G and B, in stops (yellow → red): it shows color
+    shifts as well as brightness errors.
+  - **Luminance** — the brightness error alone, with its sign: blue where the exported file is
+    darker than the original, red where it is brighter.
+
+  The color reaches full strength at ½ stop. Next to the legend, two numbers summarize the whole
+  image: the mean error and the share of pixels off by more than ¼ stop. Errors below about 2 nit are
+  ignored. Typical sources of error are the gain map's resolution (½× softens edges), a monochrome
+  gain map on saturated colors, and fine color texture.
 
 ### True HDR (EDR) preview
 
@@ -342,7 +355,7 @@ view selector, so you can tell at a glance how much HDR range your display is cu
 ### Comparison slider
 
 Toggle the **Single / Compare** switch to put two views side by side, split by a draggable divider.
-Drag any of the four view chips onto the left or right half to assign it (the prefilled pairing is
+Drag any of the view chips onto the left or right half to assign it (the prefilled pairing is
 *HDR Input* vs *Final Output*), then drag the divider to wipe between them — the quickest way to
 confirm the final output matches your intent. The divider is constrained to the image (it never
 strays into the letterbox), and switching between Single and Compare keeps your current zoom.

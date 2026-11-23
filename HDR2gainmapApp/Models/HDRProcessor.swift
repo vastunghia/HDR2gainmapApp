@@ -13,13 +13,14 @@ enum PreviewMode: String, CaseIterable, Sendable {
     case sdrTonemapped   // tone-mapped SDR base (default; supports the clipping overlay)
     case gainMap         // standalone grayscale gain map
     case finalOutput     // SDR + gain map round-tripped back to HDR (what the export produces)
+    case reconstructionError  // heatmap of the difference between HDR input and final output
 
     /// Whether the rendered image carries extended-range (HDR) content and must be displayed
     /// through the EDR path. (Also the views where the display-headroom indicator is relevant.)
     var isHDR: Bool {
         switch self {
         case .hdrInput, .finalOutput: return true
-        case .sdrTonemapped, .gainMap: return false
+        case .sdrTonemapped, .gainMap, .reconstructionError: return false
         }
     }
 
@@ -30,9 +31,50 @@ enum PreviewMode: String, CaseIterable, Sendable {
         case .sdrTonemapped: return "Tonemapped SDR"
         case .gainMap:       return "Gain Map"
         case .finalOutput:   return "SDR + Gain Map (Final Output)"
+        case .reconstructionError: return "Reconstruction Error"
         }
     }
 
+}
+
+/// What the Reconstruction Error view measures, comparing the HDR input with the HDR rebuilt from SDR
+/// base + gain map. A viewing preference stored in `UserDefaults` (`defaultsKey`); both the heatmap
+/// kernel and the summary use it. Formulas: `Utilities/PreviewKernels.metal`.
+nonisolated enum ReconstructionErrorMetric: String, CaseIterable, Sendable {
+    /// Max over R, G, B of |log2(rebuilt / input)|: brightness *and* color errors, unsigned.
+    case worstChannel
+    /// log2(Y_rebuilt / Y_input): brightness error with its sign (blue = darker, red = brighter).
+    case luminance
+
+    static let defaultsKey = "reconstructionErrorMetric"
+    /// Error (in stops) at which the heatmap reaches full color.
+    static let fullScaleStops: Float = 0.5
+    /// Error (in stops) above which a pixel counts in the summary's "% of pixels" figure.
+    static let thresholdStops: Float = 0.25
+    /// Added to both values before the ratio (linear units, ≈ 2 nit) so near-black noise is ignored.
+    static let blackFloor: Float = 0.01
+
+    static var current: ReconstructionErrorMetric {
+        ReconstructionErrorMetric(rawValue: UserDefaults.standard.string(forKey: defaultsKey) ?? "") ?? .worstChannel
+    }
+
+    var displayName: String {
+        switch self {
+        case .worstChannel: return "Worst Channel"
+        case .luminance:    return "Luminance"
+        }
+    }
+
+    /// The kernels' `metric` argument.
+    var kernelValue: Float { self == .worstChannel ? 0 : 1 }
+}
+
+/// Summary of the Reconstruction Error view for one image and settings.
+nonisolated struct ReconstructionErrorStats: Sendable {
+    /// Mean |error| over all pixels, in stops.
+    let meanStops: Double
+    /// Fraction (0…1) of pixels whose |error| exceeds `ReconstructionErrorMetric.thresholdStops`.
+    let fractionAboveThreshold: Double
 }
 
 // MARK: - Per-worker search resources (batch parallelism)
@@ -106,6 +148,13 @@ class HDRProcessor {
         let overlayOpacity: Float
         // Which view to render. The CLI never sets this (defaults to `.sdrTonemapped`).
         let mode: PreviewMode
+
+        /// The same snapshot for another view (e.g. to share another view's cache entry).
+        nonisolated func with(mode: PreviewMode) -> PreviewParams {
+            PreviewParams(url: url, method: method, tonemapRatio: tonemapRatio, percentile: percentile,
+                          directSourceHeadroom: directSourceHeadroom, targetHeadroom: targetHeadroom,
+                          overlayOpacity: overlayOpacity, mode: mode)
+        }
     }
 
     /// Snapshots the live per-image settings on the main actor.
@@ -143,10 +192,14 @@ class HDRProcessor {
         // (optionally) subsampled by `gainMapSubsampleFactor` — which changes both the gain-map view
         // and the reconstructed final-output view. Fold both global prefs into their key so toggling
         // either in Preferences yields a distinct cache entry (the stale one is never returned and
-        // gets evicted). The SDR/HDR-input views don't depend on either.
-        if p.mode == .gainMap || p.mode == .finalOutput {
+        // gets evicted). The SDR/HDR-input views don't depend on either. The error view also depends
+        // on its metric.
+        if p.mode == .gainMap || p.mode == .finalOutput || p.mode == .reconstructionError {
             k += "|rgb=\(UserDefaults.standard.bool(forKey: "gainMapRGB"))"
             k += "|gmsub=\(UserDefaults.standard.integer(forKey: "gainMapSubsampleFactor"))"
+        }
+        if p.mode == .reconstructionError {
+            k += "|err=\(ReconstructionErrorMetric.current.rawValue)"
         }
         return NSString(string: k)
     }
@@ -227,6 +280,7 @@ class HDRProcessor {
         previewOverlayCache.countLimit = 32
         previewCountsCache.countLimit = 64
         previewDetailedCache.countLimit = 64
+        errorStatsCache.countLimit = 64
     }
     
     // MARK: - Public API
@@ -358,12 +412,19 @@ class HDRProcessor {
         case .finalOutput:
             try Task.checkCancellation()
             let tEnc = Prof.tic()
-            let reconstructed = try reconstructHDRFromGainMap(sdrBase: sdrBase, hdr: hdr)
+            let reconstructed = try finalOutputImage(params: params, sdrBase: sdrBase, hdr: hdr)  // caches it
             Prof.toc("renderCore.finalOutputEncode [\(file)]", tEnc)
-            previewBaseCache.setObject(reconstructed, forKey: baseKey)
             let tRender = Prof.tic()
             defer { Prof.toc("renderCore.render→NSImage(finalOutput) [\(file)]", tRender) }
             return (try ciImageToNSImage(reconstructed, hdr: true), 0, 0, nil)
+
+        case .reconstructionError:
+            try Task.checkCancellation()
+            let reconstructed = try finalOutputImage(params: params, sdrBase: sdrBase, hdr: hdr)
+            let heat = try reconstructionErrorHeat(hdr: hdr, reconstructed: reconstructed, sdrBase: sdrBase,
+                                                   metric: .current)
+            previewBaseCache.setObject(heat, forKey: baseKey)
+            return (try ciImageToNSImage(heat, hdr: false), 0, 0, nil)
 
         case .gainMap:
             try Task.checkCancellation()
@@ -461,16 +522,7 @@ class HDRProcessor {
     @concurrent nonisolated func sdrClippingStats(for params: PreviewParams) async throws -> (clipped: Int, total: Int, detailed: DetailedClippingStats?) {
         // Stats depend only on the URL + tone-map settings; key them under the SDR view, where the
         // SDR preview render also caches them, so the two paths share results.
-        let sdrParams = PreviewParams(
-            url: params.url,
-            method: params.method,
-            tonemapRatio: params.tonemapRatio,
-            percentile: params.percentile,
-            directSourceHeadroom: params.directSourceHeadroom,
-            targetHeadroom: params.targetHeadroom,
-            overlayOpacity: params.overlayOpacity,
-            mode: .sdrTonemapped
-        )
+        let sdrParams = params.with(mode: .sdrTonemapped)
         let key = previewKey(sdrParams)
 
         if let detailed = previewDetailedCache.object(forKey: key)?.stats,
@@ -1630,6 +1682,83 @@ class HDRProcessor {
         }
         let nsImage = NSImage(cgImage: cgImage, size: NSSize(width: ciImage.extent.width, height: ciImage.extent.height))
         return nsImage
+    }
+
+    /// The HDR rebuilt from SDR base + gain map (the Final Output view's image), cached under the
+    /// `.finalOutput` key so the Final Output and Reconstruction Error views share one in-memory
+    /// encode — the expensive part of both.
+    nonisolated private func finalOutputImage(params: PreviewParams, sdrBase: CIImage, hdr: CIImage) throws -> CIImage {
+        let key = previewKey(params.with(mode: .finalOutput))
+        if let cached = previewBaseCache.object(forKey: key) { return cached }
+        let reconstructed = try reconstructHDRFromGainMap(sdrBase: sdrBase, hdr: hdr)
+        previewBaseCache.setObject(reconstructed, forKey: key)
+        return reconstructed
+    }
+
+    // MARK: - Reconstruction Error view
+
+    /// The two kernels of `Utilities/PreviewKernels.metal`, loaded once from the app's metallib. nil in
+    /// the CLI, whose metallib does not contain them (it never renders previews).
+    nonisolated private static let errorKernels: (heat: CIColorKernel, value: CIColorKernel)? = {
+        guard let url = Bundle.main.url(forResource: "default", withExtension: "metallib"),
+              let data = try? Data(contentsOf: url),
+              let heat = try? CIColorKernel(functionName: "reconstructionErrorHeat", fromMetalLibraryData: data),
+              let value = try? CIColorKernel(functionName: "reconstructionErrorValue", fromMetalLibraryData: data)
+        else { return nil }
+        return (heat, value)
+    }()
+
+    nonisolated(unsafe) private let errorStatsCache = NSCache<NSString, ErrorStatsBox>()
+
+    nonisolated final class ErrorStatsBox {
+        let stats: ReconstructionErrorStats
+        init(_ stats: ReconstructionErrorStats) { self.stats = stats }
+    }
+
+    nonisolated private var lumaWeightsVector: CIVector {
+        let (wr, wg, wb) = Constants.displayP3LumaWeights
+        return CIVector(x: CGFloat(wr), y: CGFloat(wg), z: CGFloat(wb))
+    }
+
+    /// Heatmap of the error between `hdr` and `reconstructed`, drawn over a dimmed grayscale of
+    /// `sdrBase`. Lazy: Core Image evaluates it only for the area (and at the scale) on screen.
+    nonisolated private func reconstructionErrorHeat(hdr: CIImage, reconstructed: CIImage, sdrBase: CIImage,
+                                                     metric: ReconstructionErrorMetric) throws -> CIImage {
+        guard let kernel = Self.errorKernels?.heat else { throw ProcessingError.previewKernelUnavailable }
+        guard let out = kernel.apply(extent: hdr.extent, arguments: [
+            hdr, reconstructed, sdrBase, metric.kernelValue, ReconstructionErrorMetric.fullScaleStops,
+            ReconstructionErrorMetric.blackFloor, lumaWeightsVector,
+        ]) else { throw ProcessingError.imageConversionFailed }
+        return out
+    }
+
+    /// Mean |error| and the share of pixels beyond `ReconstructionErrorMetric.thresholdStops`, at full
+    /// resolution, for the given settings and the current metric (one `CIAreaAverage` render; cached).
+    /// Shares the Final Output encode with the views (`finalOutputImage`).
+    @concurrent nonisolated func reconstructionErrorStats(for params: PreviewParams) async throws -> ReconstructionErrorStats {
+        let errorParams = params.with(mode: .reconstructionError)
+        let key = previewKey(errorParams)
+        if let cached = errorStatsCache.object(forKey: key) { return cached.stats }
+        guard let kernel = Self.errorKernels?.value else { throw ProcessingError.previewKernelUnavailable }
+
+        try Task.checkCancellation()
+        let hdr = try loadHDR(url: params.url)
+        let measuredHeadroom = getHeadroomForImage(url: params.url)
+        let sdrBase = try await buildSDRBase(hdr: hdr, params: errorParams, measuredHeadroom: measuredHeadroom)
+        try Task.checkCancellation()
+        let reconstructed = try finalOutputImage(params: errorParams, sdrBase: sdrBase, hdr: hdr)
+        try Task.checkCancellation()
+
+        let metric = ReconstructionErrorMetric.current
+        guard let values = kernel.apply(extent: hdr.extent, arguments: [
+            hdr, reconstructed, metric.kernelValue, ReconstructionErrorMetric.blackFloor, lumaWeightsVector,
+            ReconstructionErrorMetric.thresholdStops,
+        ]) else { throw ProcessingError.imageConversionFailed }
+        let avg = areaAverage(values, context: ctx_linear_p3)
+        let stats = ReconstructionErrorStats(meanStops: Double(avg[0]),
+                                             fractionAboveThreshold: Double(max(0, min(1, avg[1]))))
+        errorStatsCache.setObject(ErrorStatsBox(stats), forKey: key)
+        return stats
     }
 
     /// Reconstructs the HDR image the export would produce (SDR base + gain map) entirely in

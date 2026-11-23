@@ -2,7 +2,7 @@ import SwiftUI
 import MetalKit
 import CoreImage
 
-/// The single on-screen renderer for the preview pane, for all four views. It draws a `CIImage`
+/// The single on-screen renderer for the preview pane, for every view. It draws a `CIImage`
 /// into a `CAMetalLayer` (via `MTKView`) so that:
 ///   1. HDR views (input / final output) reliably activate the display's EDR headroom — SwiftUI's
 ///      `Image(...).allowedDynamicRange(.high)` uses a tone-mapping `CALayer`, which is *not* an

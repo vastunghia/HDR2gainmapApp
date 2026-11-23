@@ -51,6 +51,18 @@ class MainViewModel {
     var currentLeftCIImage: CIImage?
     var currentRightCIImage: CIImage?
 
+    /// Summary shown with the Reconstruction Error view (nil while computing or when the view is off
+    /// screen). `errorStatsToken` drops results of a request superseded by a newer one.
+    private(set) var reconstructionErrorStats: ReconstructionErrorStats?
+    private var errorStatsToken = 0
+
+    /// Whether the Reconstruction Error view is on screen (Single, or either side of Compare).
+    var isShowingReconstructionError: Bool {
+        isComparison
+            ? (comparisonLeftMode == .reconstructionError || comparisonRightMode == .reconstructionError)
+            : previewMode == .reconstructionError
+    }
+
     /// Per-image snapshot of the preview pane's view-state, so returning to an image restores how it
     /// was left (Single/Compare, which previews, zoom). Keyed by `HDRImage.id`; absence = never seen.
     private struct PreviewViewState {
@@ -113,7 +125,21 @@ class MainViewModel {
         Task {
             let img = await renderedCIImage(for: image, mode: mode)
             if toLeft { self.currentLeftCIImage = img } else { self.currentRightCIImage = img }
+            await self.refreshReconstructionErrorStats(for: image)
         }
+    }
+
+    /// Recomputes the Reconstruction Error summary for `image`'s current settings (cached in the
+    /// engine), or clears it when the view is not on screen.
+    func refreshReconstructionErrorStats(for image: HDRImage) async {
+        errorStatsToken += 1
+        let token = errorStatsToken
+        reconstructionErrorStats = nil   // never show numbers for other settings meanwhile
+        guard isShowingReconstructionError else { return }
+        let params = processor.previewParams(url: image.url, settings: image.settings)
+        let stats = try? await processor.reconstructionErrorStats(for: params)
+        guard token == errorStatsToken, selectedImage?.id == image.id else { return }
+        reconstructionErrorStats = stats
     }
 
     /// Renders (if needed) and returns the display CIImage for a view. Shares the existing
@@ -604,6 +630,7 @@ class MainViewModel {
             await refreshComparison(for: image)
             await refreshClippingStats(for: image)
             self.isLoadingPreview = false
+            await refreshReconstructionErrorStats(for: image)
             if refreshHistograms { await generateHistograms() }
             return
         }
@@ -665,6 +692,8 @@ class MainViewModel {
             // print("   ❌ Preview failed: \(error.localizedDescription)")
         }
         
+        await refreshReconstructionErrorStats(for: image)
+
         // Generate histograms only if requested. They describe the SDR output and HDR input, so
         // they must track tone-mapping changes regardless of which preview view is shown (e.g.
         // moving a Source Headroom slider while viewing the Gain Map still changes the SDR output).
@@ -730,10 +759,10 @@ class MainViewModel {
         }
     }
 
-    /// Re-renders the gain-map–dependent previews after a gain-map preference changes in Settings —
-    /// either the mono ↔ RGB kind or the gain-map resolution (1× ↔ ½×). Shows the loading spinner and
-    /// covers both the single view and Compare (both halves). The preview cache key folds both prefs
-    /// in, so these renders produce the right variant.
+    /// Re-renders the gain-map–dependent previews after a preference they depend on changes — the
+    /// mono ↔ RGB kind or the gain-map resolution (1× ↔ ½×) in Settings, or the Reconstruction Error
+    /// metric. Shows the loading spinner and covers both the single view and Compare (both halves).
+    /// The preview cache key folds these prefs in, so the renders produce the right variant.
     func refreshAfterGainMapSettingChange() {
         guard let image = self.selectedImage else { return }
         Task {
@@ -759,6 +788,7 @@ class MainViewModel {
                     self.currentPreviewCIImage = processor.displayPreviewCIImage(for: image, mode: mode)
                 }
             }
+            await self.refreshReconstructionErrorStats(for: image)
         }
     }
 

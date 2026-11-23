@@ -11,6 +11,7 @@ enum ProcessingError: LocalizedError {
     case imageConversionFailed
     case histogramCalculationFailed
     case writeFailed(String)
+    case previewKernelUnavailable
 
     var errorDescription: String? {
         switch self {
@@ -24,6 +25,7 @@ enum ProcessingError: LocalizedError {
         case .imageConversionFailed: return "Image conversion failed"
         case .histogramCalculationFailed: return "Histogram calculation failed"
         case .writeFailed(let msg): return "Could not write the output file: \(msg)"
+        case .previewKernelUnavailable: return "This view needs a Metal kernel that could not be loaded"
         }
     }
 }
