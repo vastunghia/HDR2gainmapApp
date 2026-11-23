@@ -203,9 +203,18 @@ class MainViewModel {
     // Periodic poll that keeps `warmImageIDs` in sync with the cache (catches evictions too).
     private var cacheStatusTask: Task<Void, Never>?
     
-    // Errors
+    // Errors (and informational notices, which set `errorTitle`; it reverts to "Error" when the
+    // alert is dismissed — see ContentView).
+    var errorTitle = "Error"
     var errorMessage: String?
     var showError = false
+
+    /// Shows an alert with a non-error title (e.g. about restored parameters).
+    func showNotice(title: String, message: String) {
+        errorTitle = title
+        errorMessage = message
+        showError = true
+    }
     
     // Export results
     var exportResults: ExportResults?
@@ -271,6 +280,8 @@ class MainViewModel {
     /// no match in the folder, so the caller can warn about missing images.
     @discardableResult
     private func loadImagesFromFolder(_ folderURL: URL, applying profile: SettingsProfile? = nil) async -> [String] {
+        // Persist the outgoing folder's pending changes before its images are replaced.
+        flushAutosave()
         do {
             let fileManager = FileManager.default
             let contents = try fileManager.contentsOfDirectory(
@@ -294,32 +305,59 @@ class MainViewModel {
             self.inputFolderURL = folderURL
             UserDefaults.standard.set(folderURL.path, forKey: Self.lastInputFolderKey)
             self.previewStates.removeAll() // drop any prior folder's per-image preview view-states
-            self.settingsExported = false  // fresh working set (import sets it true afterwards)
+            self.autosaveCarryOver = []
 
-            // Apply an imported profile, collecting file names with no match in this folder.
-            var missing: [String] = []
+            let imagesByName = Dictionary(
+                self.images.map { ($0.url.lastPathComponent, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            var missing: [String] = []   // opened profile: entries with no image in this folder
+            var changed: [String] = []   // autosave: entries whose file was replaced since
             if let profile {
-                let imagesByName = Dictionary(
-                    self.images.map { ($0.url.lastPathComponent, $0) },
-                    uniquingKeysWith: { first, _ in first }
-                )
+                // An explicitly opened profile: apply it as is, collecting file names it lists that
+                // this folder doesn't have.
                 for entry in profile.images {
                     if let image = imagesByName[entry.fileName] {
-                        image.settings.applyCoreDTO(entry.settings)
-                        image.isMarked = entry.isMarked ?? false
+                        apply(entry, to: image)
                     } else {
                         missing.append(entry.fileName)
                     }
                 }
+                scheduleAutosave()   // the folder's autosave now mirrors the opened profile
+            } else if let saved = SettingsAutosave.load(forFolder: folderURL) {
+                // The folder's autosave: restore it, except onto files that changed since (their
+                // parameters were tuned for other pixels). Entries of files absent right now are
+                // carried over, so a temporarily missing file keeps its parameters.
+                for entry in saved.images {
+                    guard let image = imagesByName[entry.fileName] else {
+                        autosaveCarryOver.append(entry)
+                        continue
+                    }
+                    if let fingerprint = SourceFingerprint(url: image.url),
+                       !fingerprint.matches(size: entry.fileSize, modifiedAt: entry.modifiedAt) {
+                        changed.append(entry.fileName)
+                        continue
+                    }
+                    apply(entry, to: image)
+                }
+                if !changed.isEmpty { scheduleAutosave() }   // forget the stale entries
             }
+            observeForAutosave()
 
-            // Warn about missing images right away — before the (slow) first-preview and
-            // thumbnail work below — so the alert appears promptly instead of seconds later.
+            // Warn right away — before the (slow) first-preview and thumbnail work below — so the
+            // alert appears promptly instead of seconds later.
             if !missing.isEmpty {
                 let list = missing.joined(separator: "\n• ")
                 self.errorMessage = "Opened the tone-mapping parameters profile, but these images from it were not found in the folder:\n\n• \(list)"
                 self.showError = true
                 await Task.yield()  // let SwiftUI present the alert before the heavy work starts
+            } else if !changed.isEmpty {
+                let list = changed.joined(separator: "\n• ")
+                showNotice(title: "Tone-Mapping Parameters",
+                           message: "Your tone-mapping parameters for this folder were restored, except for these "
+                               + "images, which have changed on disk since they were tuned (e.g. re-exported), so "
+                               + "they start from the defaults:\n\n• \(list)")
+                await Task.yield()
             }
 
             // Keep the thumbnail cache badges in sync from now on.
@@ -650,8 +688,8 @@ class MainViewModel {
     
     /// Debounced, cancellable preview-only refresh for the overlay-opacity slider. Dragging fires
     /// many changes; we coalesce them and re-render only the preview (the SDR base + clipping stats
-    /// are opacity-independent and stay cached). Deliberately does NOT call `markSettingsDirty()` —
-    /// overlay opacity is a visualization preference, like the old toggle.
+    /// are opacity-independent and stay cached). Overlay opacity is a visualization preference: it
+    /// is not persisted (see `observeForAutosave`).
     func debouncedRefreshOverlayOnly() {
         overlayRefreshTask?.cancel()
         overlayRefreshTask = Task {
@@ -738,10 +776,6 @@ class MainViewModel {
     /// Histograms are refreshed after the preview completes.
     func debouncedRefreshPreview() {
         // print("\n⏱️ [debouncedRefreshPreview] CALLED")
-
-        // Any settings edit funnels through here (ControlPanel onSettingsChange, reset-to-defaults,
-        // auto-tune) → the settings now diverge from any exported/imported profile.
-        markSettingsDirty()
 
         if refreshTask != nil {
             // print("   🔄 Cancelling previous refresh task")
@@ -880,53 +914,127 @@ class MainViewModel {
      - Preview: requested via `generatePreview(for:)` (processor may cache).
      */
     
-    // MARK: - Settings Profile (export / import)
+    // MARK: - Autosave
 
-    /// True once the current settings have been written to (or loaded from) a JSON profile, and not
-    /// touched since. Starts false, set true after a successful export/import, reset to false on any
-    /// settings change (`markSettingsDirty`). Drives the "export before closing?" prompt: that prompt
-    /// only appears when this is false. See [[SessionTerminationGuard]].
-    private(set) var settingsExported = false
+    /// Pending debounced autosave (nil when everything is saved).
+    private var autosaveTask: Task<Void, Never>?
 
-    /// Marks the in-memory settings as diverged from any exported/imported profile.
-    func markSettingsDirty() { settingsExported = false }
+    /// Entries of the restored autosave whose files aren't in the folder right now (moved away,
+    /// renamed…): carried over on every save, so a temporarily missing file keeps its parameters.
+    private var autosaveCarryOver: [ImageSettingsEntry] = []
 
-    /// Whether closing the session should offer to export: there is at least one non-default image
-    /// and those settings have not been exported/imported since the last change.
-    func hasUnsavedSettingsToExport() -> Bool {
-        !settingsExported && images.contains { $0.settings.isModifiedFromDefaults }
+    /// Reported once per session, so a failing disk doesn't turn every slider move into an alert.
+    private var autosaveFailureReported = false
+
+    init() {
+        // Flush pending changes when the app quits (window closes flush via SessionWindowGuard).
+        // Every window's view model observes this, so multiple windows are all saved.
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification,
+                                               object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.flushAutosave() }
+        }
     }
 
-    /// Exports the per-image tone-mapping settings of the loaded folder to a JSON profile.
-    /// Only images whose core settings differ from the defaults are included.
-    /// `completion` reports whether a file was actually written (false on cancel/failure) — used by
-    /// the close/quit guard to decide whether to proceed.
-    func exportSettingsProfile(completion: ((Bool) -> Void)? = nil) {
-        guard !images.isEmpty else { completion?(false); return }
-
-        let folderURL = inputFolderURL ?? images.first?.url.deletingLastPathComponent()
-        let folderPath = folderURL?.path ?? ""
-        let folderName = folderURL?.lastPathComponent ?? "images"
-
-        let entries: [ImageSettingsEntry] = images.compactMap { image in
-            let dto = image.settings.makeCoreDTO()
-            // Persist an entry when the settings differ from defaults OR the image is marked
-            // (so a marked-but-default image still round-trips its flag).
-            guard dto != nil || image.isMarked else { return nil }
-            return ImageSettingsEntry(fileName: image.url.lastPathComponent,
-                                      settings: dto ?? CoreSettingsDTO(),
-                                      isMarked: image.isMarked ? true : nil)
+    /// Re-arms a one-shot observation of everything the autosave persists — each image's
+    /// tone-mapping parameters, "ready for export" mark and filename suffix (not the overlay
+    /// opacity, a display preference) — so ANY change, wherever it comes from (sliders, Reset,
+    /// Auto / Auto all, the M key, Apply to all…), schedules a save.
+    private func observeForAutosave() {
+        withObservationTracking {
+            for image in images {
+                _ = image.isMarked
+                _ = image.settings.makeCoreDTO()
+                _ = image.settings.filenameSuffix
+            }
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.scheduleAutosave()
+                self?.observeForAutosave()
+            }
         }
+    }
 
-        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>"
-        let profile = SettingsProfile(
+    /// Saves shortly after the last change (coalesces slider drags into one write).
+    private func scheduleAutosave() {
+        autosaveTask?.cancel()
+        autosaveTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            self?.writeAutosave()
+        }
+    }
+
+    /// Writes any pending change right now (window close, quit, switching folder).
+    func flushAutosave() {
+        guard autosaveTask != nil else { return }
+        autosaveTask?.cancel()
+        writeAutosave()
+    }
+
+    private func writeAutosave() {
+        autosaveTask = nil
+        guard let folder = inputFolderURL else { return }
+        let entries = images.compactMap(settingsEntry(for:)) + autosaveCarryOver
+        guard !entries.isEmpty else {
+            SettingsAutosave.remove(forFolder: folder)   // all at defaults: nothing to remember
+            return
+        }
+        do {
+            try SettingsAutosave.save(makeProfile(folder: folder, entries: entries), forFolder: folder)
+        } catch {
+            guard !autosaveFailureReported else { return }
+            autosaveFailureReported = true
+            errorMessage = "Your tone-mapping parameters could not be saved automatically: "
+                + "\(error.localizedDescription)\n\nUse Save Tone-Mapping Parameters to keep them."
+            showError = true
+        }
+    }
+
+    // MARK: - Settings Profile (save / open, and the autosave's format)
+
+    /// The persisted state of `image` — or nil when there is nothing to persist (default parameters,
+    /// unmarked, no suffix). Carries the source file's fingerprint (see `SourceFingerprint`).
+    private func settingsEntry(for image: HDRImage) -> ImageSettingsEntry? {
+        let dto = image.settings.makeCoreDTO()
+        let suffix = image.settings.filenameSuffix
+        guard dto != nil || image.isMarked || !suffix.isEmpty else { return nil }
+        let fingerprint = SourceFingerprint(url: image.url)
+        return ImageSettingsEntry(fileName: image.url.lastPathComponent,
+                                  settings: dto ?? CoreSettingsDTO(),
+                                  isMarked: image.isMarked ? true : nil,
+                                  filenameSuffix: suffix.isEmpty ? nil : suffix,
+                                  fileSize: fingerprint?.size,
+                                  modifiedAt: fingerprint?.modifiedAt)
+    }
+
+    /// Applies a persisted entry to `image` (fields absent from the entry keep their defaults).
+    private func apply(_ entry: ImageSettingsEntry, to image: HDRImage) {
+        image.settings.applyCoreDTO(entry.settings)
+        image.isMarked = entry.isMarked ?? false
+        if let suffix = entry.filenameSuffix { image.settings.filenameSuffix = suffix }
+    }
+
+    private func makeProfile(folder: URL, entries: [ImageSettingsEntry]) -> SettingsProfile {
+        SettingsProfile(
             schemaVersion: SettingsProfile.currentSchemaVersion,
-            appVersion: appVersion,
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "<undetermined>",
             exportedAt: Date(),
-            folderPath: folderPath,
-            folderName: folderName,
+            folderPath: folder.path,
+            folderName: folder.lastPathComponent,
             images: entries
         )
+    }
+
+    /// Saves the per-image tone-mapping parameters of the loaded folder to a JSON profile the user
+    /// chooses — to share them or move them to another Mac (they are also autosaved, see above).
+    /// Only images that carry something (non-default parameters, a mark or a suffix) are included.
+    func exportSettingsProfile() {
+        guard !images.isEmpty else { return }
+
+        let folderURL = inputFolderURL ?? images.first?.url.deletingLastPathComponent()
+        let folderName = folderURL?.lastPathComponent ?? "images"
+        let profile = makeProfile(folder: folderURL ?? URL(fileURLWithPath: "/"),
+                                  entries: images.compactMap(settingsEntry(for:)))
 
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "\(folderName)-tonemap-parameters.json"
@@ -934,8 +1042,7 @@ class MainViewModel {
         panel.message = "Choose where to save the tone-mapping parameters profile"
 
         panel.begin { [weak self] response in
-            guard let self else { completion?(false); return }
-            guard response == .OK, let url = panel.url else { completion?(false); return }
+            guard let self, response == .OK, let url = panel.url else { return }
 
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -943,12 +1050,9 @@ class MainViewModel {
             do {
                 let data = try encoder.encode(profile)
                 try data.write(to: url, options: .atomic)
-                self.settingsExported = true
-                completion?(true)
             } catch {
                 self.errorMessage = "Failed to save tone-mapping parameters profile: \(error.localizedDescription)"
                 self.showError = true
-                completion?(false)
             }
         }
     }
@@ -1001,11 +1105,7 @@ class MainViewModel {
                 guard folderResponse == .OK, let folderURL = folderPanel.url else { return }
 
                 // loadImagesFromFolder surfaces the "missing images" warning itself, early.
-                Task {
-                    await self.loadImagesFromFolder(folderURL, applying: profile)
-                    // The in-memory settings now correspond to the just-imported profile on disk.
-                    self.settingsExported = true
-                }
+                Task { await self.loadImagesFromFolder(folderURL, applying: profile) }
             }
         }
     }

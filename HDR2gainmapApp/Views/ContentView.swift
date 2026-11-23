@@ -15,8 +15,8 @@ struct ContentView: View {
                 MainInterfaceView(viewModel: viewModel)
             }
         }
-        .alert("Error", isPresented: $viewModel.showError) {
-            Button("OK") { }
+        .alert(viewModel.errorTitle, isPresented: $viewModel.showError) {
+            Button("OK") { viewModel.errorTitle = "Error" }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
         }
@@ -31,7 +31,7 @@ struct ContentView: View {
             }
             SessionCoordinator.shared.activeViewModel = viewModel
         }
-        // Intercept the window's close button to offer exporting unsaved settings first.
+        // Intercept the window's close button: stop a running export first, and flush the autosave.
         .background(SessionWindowGuard(viewModel: viewModel))
         // Expose this window's view model to the menu commands (File ▸ Export/Import Settings),
         // so they act on the frontmost window.

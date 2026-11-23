@@ -130,17 +130,19 @@ export an HDR PNG/TIFF → HDR2gainmap App → a gain-map HEIC you can drop stra
   encoded, so a failed or cancelled export never destroys a previous one. Two images that would
   produce the same output name (e.g. `photo.png` and `photo.tif`) are not exported, and the summary
   says why.
+- **Automatic saving of tone-mapping parameters**: every change (parameters, the "ready for export"
+  flag, the filename suffix) is saved automatically for the folder, and restored when you open the
+  same folder again — nothing to remember, nothing lost when you quit.
 - **Save / open tone-mapping parameters**: save the per-image tone-mapping parameters of a
-  whole folder to a portable JSON profile and re-apply them later — ideal for resuming work or sharing
-  a look across machines (only images you actually customized are stored; any images listed in the
-  profile but missing from the folder are reported when opening it). If you close the window or quit
-  with unsaved customizations, the app **offers to save your tone-mapping parameters first**.
+  whole folder to a portable JSON profile and re-apply them later — ideal for sharing a look or moving
+  your work to another machine (only images you actually customized are stored; any images listed in
+  the profile but missing from the folder are reported when opening it).
 - **Fast thumbnail navigation**: browse images from the bottom thumbnail bar, or move to the
   previous/next image with the **←/→ arrow keys** (the selected thumbnail scrolls into view).
 - **Thumbnail status badges**: a **"tone-mapping parameters modified"** badge flags thumbnails whose
   tone-mapping differs from the defaults, and a user-toggled **"ready for export"** flag (press the
-  **M** key on the current image) lets you mark the shots you have finished — the flag is persisted in
-  the tone-mapping parameters profile.
+  **M** key on the current image) lets you mark the shots you have finished — the flag is saved
+  automatically with the folder's parameters (and in saved profiles).
 - **"In memory" indicator**: a small ⚡️ lightning-bolt badge marks the thumbnails whose pixels are
   currently resident in memory (and will therefore load instantly); it updates live as images are
   cached and as older ones are evicted.
@@ -343,14 +345,26 @@ Settings.
 
 ## Saving & Reusing Tone-Mapping Parameters
 
-The tone-mapping parameters you craft for each image live only in memory during a
-session. To preserve them — or carry them to another machine — you can save them to a
-**tone-mapping parameters profile**, a small human-readable JSON file, and open it again later.
+**Your work is saved automatically.** Every change to an image — its tone-mapping parameters, the
+"ready for export" flag, its filename suffix — is saved a moment later (and right away when you close
+the window, quit, or open another folder). When you open the same folder again, everything comes back
+as you left it. The automatic save lives inside the app's own storage; nothing is written into your
+image folders. Two details:
+
+- If an image file has **changed on disk** since its parameters were tuned (for example, you
+  re-exported it from Lightroom), its old parameters are *not* re-applied — they were tuned for
+  different pixels — and the app tells you which images start from the defaults.
+- Parameters are remembered per folder location: if you move or rename the folder, use a saved
+  profile (below) to bring them along.
+
+To share your parameters or carry them to another machine, save them to a **tone-mapping parameters
+profile**, a small human-readable JSON file, and open it again later:
 
 - **Save Tone-Mapping Parameters** writes a profile for the currently open folder. To keep the file
-  compact, only images whose parameters differ from the defaults are stored; for each, only the
-  parameters you actually changed are saved (method, and the relevant source/target-headroom values).
-  The profile also records the source folder and the app version that produced it.
+  compact, only images that carry something are stored (customized parameters, the "ready for export"
+  flag or a filename suffix); for each, only the parameters you actually changed are saved (method,
+  and the relevant source/target-headroom values). The profile also records the source folder and the
+  app version that produced it.
 - **Open Tone-Mapping Parameters** lets you pick a profile, then confirm the folder it refers to (the
   file picker is pre-positioned on the saved path). The matching images are reloaded with their
   parameters already applied. If the profile references images that are no longer in the folder
@@ -360,11 +374,6 @@ session. To preserve them — or carry them to another machine — you can save 
 Both actions are available from the **File menu** (Save Tone-Mapping Parameters ⌘S / Open
 Tone-Mapping Parameters ⌘O), from the **Control Panel** (below the tone-mapping controls), and — for
 opening — directly from the **start screen**, so you can reopen a folder straight from a saved profile.
-
-As a safety net, if you try to **close the window or quit** while one or more images carry
-customizations that have not been saved (or opened from a profile) since your last change, the app asks
-whether you want to save your tone-mapping parameters first — so a session's work is never lost by
-accident.
 
 ## The Settings window
 

@@ -311,6 +311,11 @@ struct TonemapControlsSection: View {
                 .controlSize(.large)
                 .disabled(viewModel.isExporting)
                 .help("Open a previously saved tone-mapping parameters profile")
+
+                Text("Parameters are saved automatically for this folder. Save them to a file to share them or move them to another Mac.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal)
@@ -634,7 +639,7 @@ struct ExportSection: View {
                     HStack(spacing: 8) {
                         TextField("e.g., \"processed\" or \"_v2\"", text: Binding(
                             get: { selectedImage.settings.filenameSuffix },
-                            set: { selectedImage.settings.filenameSuffix = $0; viewModel.markSettingsDirty() }
+                            set: { selectedImage.settings.filenameSuffix = $0 }
                         ))
                         .textFieldStyle(.roundedBorder)
                         .font(.subheadline)
@@ -741,7 +746,6 @@ struct ExportSection: View {
         for image in viewModel.images {
             image.settings.filenameSuffix = suffix
         }
-        viewModel.markSettingsDirty()
     }
 }
 

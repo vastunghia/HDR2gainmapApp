@@ -1,9 +1,12 @@
 import Foundation
 
 /// Serializable "development profile" for a folder of HDR images: the source folder,
-/// the producing app version, and — only for images whose tone-mapping differs from the
-/// defaults — their core settings. Images left at default are omitted entirely, so the
-/// file stays sparse.
+/// the producing app version, and — only for images that carry something (non-default
+/// tone-mapping, the "ready for export" mark, or a filename suffix) — their per-image state.
+/// Images left at default are omitted entirely, so the file stays sparse.
+///
+/// The same format serves the user-saved profiles (Save / Open Tone-Mapping Parameters) and the
+/// per-folder autosave (`SettingsAutosave`).
 ///
 /// These DTOs live in the app target only (the CLI does not import/export profiles). They
 /// are intentionally separate from the `@Observable` `ProcessingSettings` so that only the
@@ -42,6 +45,14 @@ struct ImageSettingsEntry: Codable {
     /// User "ready for export" flag. Optional & omitted when nil (backward compatible: older
     /// profiles without this field decode as nil → unmarked).
     var isMarked: Bool? = nil
+    /// Per-image filename suffix for the exported HEIC; omitted when empty.
+    var filenameSuffix: String? = nil
+    /// Fingerprint of the source file when this entry was written (size in bytes, modification time
+    /// in seconds since 1970). The autosave restore skips an entry whose file no longer matches —
+    /// e.g. re-exported from Lightroom — instead of applying parameters tuned for other pixels.
+    /// Optional (older profiles have none → no check).
+    var fileSize: Int64? = nil
+    var modifiedAt: Double? = nil
 }
 
 // MARK: - Profile file
