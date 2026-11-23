@@ -296,7 +296,7 @@ The gain map encodes the per-pixel boost needed to reconstruct the HDR rendition
 
 The app computes the gain map itself, pixel by pixel, in linear Display P3: for each pixel it takes the ratio between the HDR and SDR values and stores it log-encoded and normalized to the image's peak. By default this is done **per channel — an RGB gain map**, which reconstructs each channel independently and keeps highlight colors truer; you can instead choose a **single-luminance monochrome gain map** (smaller, but it scales all channels equally) in the Settings window. The computed gain map is then attached as a standards-based **ISO 21496-1** auxiliary image and written into the HEIC by ImageIO (see Section 3) — the same format Apple itself writes for native HDR captures on recent systems, recognized both across the Apple ecosystem and by standards-compliant non-Apple software.
 
-> **Note:** computing the gain map directly is what makes the RGB option possible — on macOS 15 Core Image only emits a luminance gain map. A legacy path that lets Core Image compute the (monochrome) gain map is still available in the companion command-line tool via `--mono-coreimage`.
+> **Note:** computing the gain map directly is what makes the RGB option possible — on macOS 15 Core Image only emits a luminance gain map. Earlier versions let Core Image compute the (monochrome) gain map; that path has been removed.
 
 > **Note:** earlier versions instead embedded the legacy Apple `HDRGainMap` scheme together with Maker Apple metadata (MakerNote tags 33 and 48). That path has been removed in favor of the ISO 21496-1 format.
 
@@ -304,7 +304,7 @@ The app computes the gain map itself, pixel by pixel, in linear Display P3: for 
 
 Once the gain map has been computed, the app writes the final HEIC by combining the SDR base, the gain map, and the preserved source metadata — in a **single write to disk**. The SDR base is encoded as the primary 10-bit image and the gain map is attached under the standard `kCGImageAuxiliaryDataTypeISOGainMap` slot (with matching ISO 21496-1 binary metadata) by ImageIO, all in one pass. The gain map is stored at full resolution by default, or subsampled if you pick half resolution in the Settings window. Original Exif/TIFF/GPS metadata is preserved: the app appends itself to the `Software` tag and strips the legacy Apple MakerNote headroom tags (33 & 48) so the modern ISO scheme is emitted rather than the legacy Apple one.
 
-> **Note:** the optional Core Image monochrome path (command-line `--mono-coreimage`) works differently — it first lets Core Image compute and embed the gain map into an in-memory HEIC, then re-encodes that buffer into the ISO 21496-1 layout. Earlier versions used this two-step flow for *every* export (and an even older one wrote the HEIC to disk twice); the default RGB and monochrome paths now assemble the ISO gain map directly in a single write.
+> **Note:** earlier versions let Core Image compute and embed the gain map into an in-memory HEIC, then re-encoded that buffer into the ISO 21496-1 layout (and an even older one wrote the HEIC to disk twice); both gain-map kinds are now assembled directly as ISO 21496-1 in a single write.
 
 The export and preview options (quality, gain map resolution, RGB vs monochrome, zoom level, …) live in the **Settings window** — see [The Settings window](#the-settings-window) below.
 

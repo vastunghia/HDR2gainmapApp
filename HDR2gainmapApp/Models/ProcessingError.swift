@@ -10,7 +10,6 @@ enum ProcessingError: LocalizedError {
     case clipMaskFailed
     case imageConversionFailed
     case histogramCalculationFailed
-    case isoConversionFailed(String)
     case writeFailed(String)
 
     var errorDescription: String? {
@@ -24,7 +23,6 @@ enum ProcessingError: LocalizedError {
         case .clipMaskFailed: return "Clip mask generation failed"
         case .imageConversionFailed: return "Image conversion failed"
         case .histogramCalculationFailed: return "Histogram calculation failed"
-        case .isoConversionFailed(let msg): return "ISO conversion failed: \(msg)"
         case .writeFailed(let msg): return "Could not write the output file: \(msg)"
         }
     }

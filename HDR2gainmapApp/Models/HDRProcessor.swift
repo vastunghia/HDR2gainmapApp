@@ -527,8 +527,6 @@ class HDRProcessor {
     nonisolated struct ExportOptions: Sendable {
         /// 3-channel (RGB) gain map instead of luma (GUI default: on, registered in the App init).
         let rgbGainMap: Bool
-        /// Legacy Core Image luma gain map (CLI `--mono-coreimage`); ignored when `rgbGainMap`.
-        let monoCoreImage: Bool
         /// Gain-map resolution divisor: 1 = full, 2 = half.
         let gainMapSubsampleFactor: Int
         /// HEIC lossy-compression quality.
@@ -536,25 +534,17 @@ class HDRProcessor {
 
         static let defaultQuality = 0.95
 
-        /// The current preferences (`gainMapRGB`, `gainMapMonoCoreImage`, `gainMapSubsampleFactor`,
-        /// `heicExportQuality`), with the fallbacks the engine has always used.
+        /// The current preferences (`gainMapRGB`, `gainMapSubsampleFactor`, `heicExportQuality`), with
+        /// the fallbacks the engine has always used.
         static func fromUserDefaults(_ defaults: UserDefaults = .standard) -> ExportOptions {
             let storedFactor = defaults.integer(forKey: "gainMapSubsampleFactor")
             let storedQuality = defaults.double(forKey: "heicExportQuality")
             return ExportOptions(
                 rgbGainMap: defaults.bool(forKey: "gainMapRGB"),
-                monoCoreImage: defaults.bool(forKey: "gainMapMonoCoreImage"),
                 gainMapSubsampleFactor: storedFactor > 0 ? storedFactor : 1,
                 quality: storedQuality > 0 ? storedQuality : defaultQuality
             )
         }
-    }
-
-    /// Exports a single image as HEIC with gain map (main-actor convenience, used by the CLI):
-    /// snapshots the image's settings and the current preferences, then runs `export(params:…)`.
-    func exportImage(_ image: HDRImage, to outputURL: URL) async throws {
-        try await export(params: previewParams(url: image.url, settings: image.settings),
-                         options: .fromUserDefaults(), to: outputURL)
     }
 
     /// Renders `params` as a gain-map HEIC and writes it to `outputURL`, entirely off the main actor
@@ -592,62 +582,24 @@ class HDRProcessor {
         try Task.checkCancellation()
         let props = exportProperties(for: params.url)
 
-        // RGB gain map (strada B): a 3-channel ISO 21496-1 gain map computed and assembled by us.
-        // Core Image emits only a luma gain map on macOS 15 (RGB is macOS 26+). The SDR base is the
-        // same as the mono paths' — only the gain map differs.
-        if options.rgbGainMap {
-            guard let data = encodeRGBGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: props,
-                                                      subsampleFactor: options.gainMapSubsampleFactor,
-                                                      quality: options.quality) else {
-                try Task.checkCancellation()   // nil because the export was cancelled mid-encode
-                throw ProcessingError.gainMapGenerationFailed
-            }
-            return data
+        // Both kinds are computed by us and assembled as an ISO 21496-1 gain map (Core Image emits only
+        // a luma gain map on macOS 15, RGB only on macOS 26+). The SDR base is the same for both.
+        let data = options.rgbGainMap
+            ? encodeRGBGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: props,
+                                       subsampleFactor: options.gainMapSubsampleFactor, quality: options.quality)
+            : encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: props,
+                                              subsampleFactor: options.gainMapSubsampleFactor, quality: options.quality)
+        guard let data else {
+            try Task.checkCancellation()   // nil because the export was cancelled mid-encode
+            throw ProcessingError.gainMapGenerationFailed
         }
-
-        // Default mono path: a luma gain map we hand-assemble (see `encodeMonoManualGainMapHEICData`).
-        if !options.monoCoreImage {
-            guard let data = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: props,
-                                                             subsampleFactor: options.gainMapSubsampleFactor,
-                                                             quality: options.quality) else {
-                try Task.checkCancellation()   // nil because the export was cancelled mid-encode
-                throw ProcessingError.gainMapGenerationFailed
-            }
-            return data
-        }
-
-        // --- Legacy Core Image mono path (opt-in: CLI `--mono-coreimage`) ---
-        // Core Image computes the luma gain map from the HDR source (`.hdrImage`) and embeds it in an
-        // in-memory HEIC, which `convertToISOGainMap` then re-encodes into the ISO 21496-1 layout.
-        let sdrWithProps = sdrBase.settingProperties(props)
-        let encodeOptions: [CIImageRepresentationOption: Any] = [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: options.quality,
-            CIImageRepresentationOption.hdrGainMapAsRGB: false,
-            CIImageRepresentationOption.hdrImage: hdr
-        ]
-        let heifData: Data
-        if #available(macOS 26.0, *) {
-            heifData = try encode_ctx.heif10Representation(of: sdrWithProps,
-                                                           colorSpace: p3_cs,
-                                                           options: encodeOptions)
-        } else {
-            guard let d = encode_ctx.heifRepresentation(of: sdrWithProps,
-                                                        format: .RGB10,
-                                                        colorSpace: p3_cs,
-                                                        options: encodeOptions) else {
-                throw ProcessingError.gainMapGenerationFailed
-            }
-            heifData = d
-        }
-        try Task.checkCancellation()
-        return try convertToISOGainMap(from: heifData, subsampleFactor: options.gainMapSubsampleFactor,
-                                       quality: options.quality)
+        return data
     }
 
-    /// The source file's preserved metadata, prepared for the output: legacy Apple MakerNote
-    /// headroom tags (33 & 48) stripped — ISO 21496-1 output needs Core Image to emit the modern
-    /// HDRToneMap scheme, which it does precisely when those tags are absent — and the app appended
-    /// to the TIFF `Software` tag.
+    /// The source file's preserved metadata, prepared for the output: the Apple MakerNote headroom
+    /// tags (33 & 48) of Apple's legacy gain-map scheme stripped — the output carries an ISO 21496-1
+    /// gain map instead (when Core Image encoded the gain map, their presence switched it to the
+    /// legacy scheme) — and the app appended to the TIFF `Software` tag.
     nonisolated private func exportProperties(for url: URL) -> [String: Any] {
         var props = extractMetadata(from: url)
 
@@ -670,76 +622,6 @@ class HDRProcessor {
         return props
     }
 
-    // MARK: - ISO 21496-1 Gain Map Conversion
-
-    /// Re-encode the in-memory HEIC so its gain map is stored as a standard ISO 21496-1
-    /// gain map (`kCGImageAuxiliaryDataTypeISOGainMap`) instead of the Apple-proprietary
-    /// `kCGImageAuxiliaryDataTypeHDRGainMap` slot, returning the re-encoded file bytes.
-    ///
-    /// Available on macOS 15+ via `CGImageDestination` with `kCGImageDestinationEncodeToISOGainmap`.
-    /// We read back the gain map Core Image wrote (Apple HDRGainMap aux + HDRToneMap metadata),
-    /// add it under the ISO aux type, and let ImageIO emit the spec-correct ISO 21496-1 binary
-    /// metadata. The HDR reconstruction is preserved (verified: identical peak luminance).
-    ///
-    /// `sourceData` is the HEIC Core Image just encoded in RAM; nothing touches the disk here.
-    nonisolated private func convertToISOGainMap(from sourceData: Data, subsampleFactor: Int,
-                                                 quality: Double) throws -> Data {
-        guard let src = CGImageSourceCreateWithData(sourceData as CFData, nil) else {
-            throw ProcessingError.isoConversionFailed("[A] CGImageSourceCreateWithData nil")
-        }
-
-        // The gain map Core Image just wrote. Where it lands depends on how it was produced:
-        // letting Core Image compute it via `.hdrImage` (as we now do) puts it under the ISO gain
-        // map aux type, whereas an explicit `.hdrGainMapImage` embed used the Apple HDRGainMap slot.
-        // Verified on macOS 15 (`heifRepresentation(format:.RGB10)`); the macOS 26
-        // `heif10Representation` branch is only exercisable via CI, so accept EITHER slot — we
-        // re-emit it as ISO below (subsampled) regardless.
-        let rawAux = CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, kCGImageAuxiliaryDataTypeHDRGainMap)
-                  ?? CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, kCGImageAuxiliaryDataTypeISOGainMap)
-        guard var auxDict = rawAux as? [String: Any] else {
-            // Enumerate other aux types so we can tell whether the gain map landed elsewhere.
-            let probes: [(String, CFString)] = [
-                ("ISO",     kCGImageAuxiliaryDataTypeISOGainMap),
-                ("Depth",   kCGImageAuxiliaryDataTypeDepth),
-                ("Portrait", kCGImageAuxiliaryDataTypePortraitEffectsMatte)
-            ]
-            let present = probes
-                .filter { CGImageSourceCopyAuxiliaryDataInfoAtIndex(src, 0, $0.1) != nil }
-                .map { $0.0 }
-            let presentStr = present.isEmpty ? "none" : present.joined(separator: ",")
-            throw ProcessingError.isoConversionFailed("[B] no HDRGainMap aux readable from in-memory HEIC (other aux present: \(presentStr))")
-        }
-
-        // Optionally subsample the gain map (`ExportOptions.gainMapSubsampleFactor`: 1 = full
-        // resolution, 2 halves it to shrink the file at the cost of softened highlight detail).
-        if subsampleFactor > 1, let smaller = downsampleGainMapAux(auxDict, factor: subsampleFactor) {
-            auxDict = smaller
-        }
-
-        guard let base = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw ProcessingError.isoConversionFailed("[C] CGImageSourceCreateImageAtIndex nil")
-        }
-
-        // Carry over the original image properties (Exif/TIFF/GPS/…) and request ISO encoding.
-        var imgProps = (CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [String: Any]) ?? [:]
-        imgProps[kCGImageDestinationEncodeRequest as String] = kCGImageDestinationEncodeToISOGainmap
-        imgProps[kCGImageDestinationLossyCompressionQuality as String] = quality
-
-        let utType = CGImageSourceGetType(src) ?? ("public.heic" as CFString)
-        // Encode in memory; `export(params:…)` writes the bytes (see there for the sandbox rationale).
-        let buffer = NSMutableData()
-        guard let dst = CGImageDestinationCreateWithData(buffer as CFMutableData, utType, 1, nil) else {
-            throw ProcessingError.isoConversionFailed("[D] CGImageDestinationCreateWithData nil, utType=\(utType)")
-        }
-        CGImageDestinationAddImage(dst, base, imgProps as CFDictionary)
-        CGImageDestinationAddAuxiliaryDataInfo(dst, kCGImageAuxiliaryDataTypeISOGainMap, auxDict as CFDictionary)
-        guard CGImageDestinationFinalize(dst) else {
-            throw ProcessingError.isoConversionFailed("[G] CGImageDestinationFinalize returned false")
-        }
-        return buffer as Data
-    }
-    
-    
     // MARK: - RGB Gain Map (`ExportOptions.rgbGainMap`)
 
     /// Encode the SDR base + a 3-channel (RGB) ISO 21496-1 gain map into an in-memory HEIC `Data`.
@@ -961,50 +843,6 @@ class HDRProcessor {
         ].joined(separator: "\n")
         guard let data = xmp.data(using: .utf8) else { return nil }
         return CGImageMetadataCreateFromXMPData(data as CFData)
-    }
-
-    /// Downsample a gain-map auxiliary dictionary by an integer `factor`, returning a new
-    /// dictionary with the resized pixel buffer and an updated data description. Only handles
-    /// the 8-bit single-channel (`L008`) gain maps Core Image produces; returns nil for anything
-    /// else (caller then embeds the gain map unchanged).
-    nonisolated private func downsampleGainMapAux(_ aux: [String: Any], factor: Int) -> [String: Any]? {
-        guard factor > 1,
-              let data = aux[kCGImageAuxiliaryDataInfoData as String] as? Data,
-              let desc = aux[kCGImageAuxiliaryDataInfoDataDescription as String] as? [String: Any],
-              let w = desc["Width"] as? Int, let h = desc["Height"] as? Int,
-              let bpr = desc["BytesPerRow"] as? Int else { return nil }
-
-        // 'L008' = 8-bit luminance, one channel — the format Core Image writes for a luma gain map.
-        let kL008 = 1_278_226_488
-        guard (desc["PixelFormat"] as? Int) == kL008 else { return nil }
-
-        let gray = CGColorSpaceCreateDeviceGray()
-        guard let provider = CGDataProvider(data: data as CFData),
-              let gmImg = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 8,
-                                  bytesPerRow: bpr, space: gray,
-                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                                  provider: provider, decode: nil,
-                                  shouldInterpolate: false, intent: .defaultIntent) else { return nil }
-
-        let nw = max(1, w / factor), nh = max(1, h / factor)
-        guard let ctx = CGContext(data: nil, width: nw, height: nh, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: gray,
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        ctx.interpolationQuality = .high
-        ctx.draw(gmImg, in: CGRect(x: 0, y: 0, width: nw, height: nh))
-        guard let raw = ctx.data else { return nil }
-        let nbpr = ctx.bytesPerRow
-        let newData = Data(bytes: raw, count: nbpr * nh)
-
-        var newDesc = desc
-        newDesc["Width"] = nw
-        newDesc["Height"] = nh
-        newDesc["BytesPerRow"] = nbpr
-
-        var out = aux
-        out[kCGImageAuxiliaryDataInfoData as String] = newData
-        out[kCGImageAuxiliaryDataInfoDataDescription as String] = newDesc
-        return out
     }
 
     // MARK: - Metadata Extraction
@@ -1257,19 +1095,12 @@ class HDRProcessor {
     /// independently of the other channels). Limiting this curbs single-channel clipping (e.g. a
     /// clipped R channel shifts the reconstructed tint toward yellow).
     nonisolated private func maxPerChannelClipFraction(sdr: CIImage, context: CIContext) -> Double {
-        let thr = Self.clipCeilingThreshold
-
-        let rMask = thresh01(extractChannel(sdr, r: 1, g: 0, b: 0), threshold: thr)
-        let gMask = thresh01(extractChannel(sdr, r: 0, g: 1, b: 0), threshold: thr)
-        let bMask = thresh01(extractChannel(sdr, r: 0, g: 0, b: 1), threshold: thr)
-
-        func fraction(_ mask: CIImage) -> Double {
-            let (clipped, total) = clippedCountViaAreaAverage(binaryMaskR: mask, context: context)
-            guard total > 0 else { return 0 }
-            return Double(clipped) / Double(total)
-        }
-
-        return max(fraction(rMask), max(fraction(gMask), fraction(bMask)))
+        let total = Int(sdr.extent.width) * Int(sdr.extent.height)
+        guard total > 0 else { return 0 }
+        // One render: the area average of the 3-channel ceiling mask is (frac_R, frac_G, frac_B).
+        let avg = areaAverage(channelClipMask(sdr), context: context)
+        func fraction(_ v: Float) -> Double { Double(pixelCount(fraction: v, total: total)) / Double(total) }
+        return max(fraction(avg[0]), max(fraction(avg[1]), fraction(avg[2])))
     }
 
     /// Finds the smallest source headroom in [1.0, measured] whose tone-mapped SDR keeps the worst
@@ -1638,35 +1469,50 @@ class HDRProcessor {
         )
     }
 
-    /// Counts clipped pixels per category (the expensive `CIAreaAverage` renders). Opacity-independent.
+    /// Counts clipped pixels per category (opacity-independent). The 13 binary masks are packed three
+    /// to an image — one per colour channel — so `CIAreaAverage` yields three counts per render
+    /// (5 renders instead of 13). Counts match the overlay, which paints the same masks.
     nonisolated func computeClippingStats(
         sdr: CIImage,
         context: CIContext
     ) -> (clipped: Int, total: Int, detailedStats: DetailedClippingStats)? {
         guard let m = clippingCategoryMasks(sdr: sdr) else { return nil }
+        let total = m.total
 
-        func countPixels(_ mask: CIImage) -> Int {
-            let (c, _) = clippedCountViaAreaAverage(binaryMaskR: mask, context: context)
-            return c
+        // Mask (in R) moved to `channel`, with 1 in the other colour channels, so multiplying three
+        // of them packs them as (a, b, c, 1).
+        func inChannel(_ mask: CIImage, _ channel: Int) -> CIImage {
+            let f = CIFilter.colorMatrix()
+            f.inputImage = mask
+            let pick = CIVector(x: 1, y: 0, z: 0, w: 0), none = CIVector(x: 0, y: 0, z: 0, w: 0)
+            f.rVector = channel == 0 ? pick : none
+            f.gVector = channel == 1 ? pick : none
+            f.bVector = channel == 2 ? pick : none
+            f.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            f.biasVector = CIVector(x: channel == 0 ? 0 : 1, y: channel == 1 ? 0 : 1, z: channel == 2 ? 0 : 1, w: 0)
+            return f.outputImage!
+        }
+        func counts(_ masks: [CIImage]) -> [Int] {
+            var packed = inChannel(masks[0], 0)
+            for (i, mask) in masks.enumerated().dropFirst() { packed = andMask(packed, inChannel(mask, i)) }
+            let avg = areaAverage(packed.cropped(to: sdr.extent), context: context)
+            return (0..<masks.count).map { pixelCount(fraction: avg[$0], total: total) }
         }
 
+        let a = counts([m.onlyR_bright, m.onlyG_bright, m.onlyB_bright])
+        let b = counts([m.rg_bright, m.rb_bright, m.gb_bright])
+        let c = counts([m.onlyR_dim, m.onlyG_dim, m.onlyB_dim])
+        let d = counts([m.rg_dim, m.rb_dim, m.gb_dim])
+        let e = counts([m.all3])
         let detailedStats = DetailedClippingStats(
-            total: m.total,
-            redOnly: countPixels(m.onlyR_bright),
-            greenOnly: countPixels(m.onlyG_bright),
-            blueOnly: countPixels(m.onlyB_bright),
-            yellowBright: countPixels(m.rg_bright),
-            magentaBright: countPixels(m.rb_bright),
-            cyanBright: countPixels(m.gb_bright),
-            redDim: countPixels(m.onlyR_dim),
-            greenDim: countPixels(m.onlyG_dim),
-            blueDim: countPixels(m.onlyB_dim),
-            yellowDim: countPixels(m.rg_dim),
-            magentaDim: countPixels(m.rb_dim),
-            cyanDim: countPixels(m.gb_dim),
-            white: countPixels(m.all3)
+            total: total,
+            redOnly: a[0], greenOnly: a[1], blueOnly: a[2],
+            yellowBright: b[0], magentaBright: b[1], cyanBright: b[2],
+            redDim: c[0], greenDim: c[1], blueDim: c[2],
+            yellowDim: d[0], magentaDim: d[1], cyanDim: d[2],
+            white: e[0]
         )
-        return (detailedStats.totalClipped, m.total, detailedStats)
+        return (detailedStats.totalClipped, total, detailedStats)
     }
 
     /// Composites the colorized clipping overlay onto `sdr` at the given `opacity` (0…1). The overlay
@@ -1716,27 +1562,56 @@ class HDRProcessor {
     }
     
     
-    nonisolated private func clippedCountViaAreaAverage(binaryMaskR: CIImage, context: CIContext) -> (Int, Int) {
-        let w = Int(binaryMaskR.extent.width), h = Int(binaryMaskR.extent.height)
-        guard w > 0, h > 0 else { return (0, 0) }
-        
-        let f = CIFilter(name: "CIAreaAverage",
-                         parameters: [kCIInputImageKey: binaryMaskR,
-                                     kCIInputExtentKey: CIVector(cgRect: binaryMaskR.extent)])!
-        let out = f.outputImage!
-        
-        var px = [Float](repeating: 0, count: 4)
-        context.render(out, toBitmap: &px,
-                       rowBytes: MemoryLayout<Float>.size * 4,
-                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
-                       format: .RGBAf, colorSpace: nil)
-        
-        let fraction = max(0, min(1, px[0]))
-        let total = w * h
-        let clipped = Int((fraction * Float(total)).rounded(.toNearestOrAwayFromZero))
-        return (clipped, total)
+    /// 3-channel ceiling mask of `sdr`: R, G and B are each 1 where that channel is pinned at the SDR
+    /// ceiling (≥ `clipCeilingThreshold`), else 0. Per channel it is the same arithmetic as
+    /// `thresh01(extractChannel(…))` (used by the overlay), so one render yields all three channels.
+    nonisolated private func channelClipMask(_ sdr: CIImage) -> CIImage {
+        let thr = Self.clipCeilingThreshold
+        let sub = CIFilter.colorMatrix()
+        sub.inputImage = sdr
+        sub.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+        sub.gVector = CIVector(x: 0, y: 1, z: 0, w: 0)
+        sub.bVector = CIVector(x: 0, y: 0, z: 1, w: 0)
+        sub.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        sub.biasVector = CIVector(x: -thr, y: -thr, z: -thr, w: 0)
+
+        let clampPos = CIFilter.colorClamp()
+        clampPos.inputImage = sub.outputImage!
+        clampPos.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clampPos.maxComponents = CIVector(x: 1e6, y: 1e6, z: 1e6, w: 1)
+
+        let gain: CGFloat = 1_000_000
+        let amp = CIFilter.colorMatrix()
+        amp.inputImage = clampPos.outputImage!
+        amp.rVector = CIVector(x: gain, y: 0, z: 0, w: 0)
+        amp.gVector = CIVector(x: 0, y: gain, z: 0, w: 0)
+        amp.bVector = CIVector(x: 0, y: 0, z: gain, w: 0)
+        amp.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+
+        let clamp01 = CIFilter.colorClamp()
+        clamp01.inputImage = amp.outputImage!
+        clamp01.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+        clamp01.maxComponents = CIVector(x: 1, y: 1, z: 1, w: 1)
+        return clamp01.outputImage!
     }
-    
+
+    /// Per-channel mean of `image` over its extent (one `CIAreaAverage` render), as RGBA floats.
+    nonisolated private func areaAverage(_ image: CIImage, context: CIContext) -> [Float] {
+        let f = CIFilter.areaAverage()
+        f.inputImage = image
+        f.extent = image.extent
+        var px = [Float](repeating: 0, count: 4)
+        guard let out = f.outputImage else { return px }
+        context.render(out, toBitmap: &px, rowBytes: MemoryLayout<Float>.size * 4,
+                       bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBAf, colorSpace: nil)
+        return px
+    }
+
+    /// A fraction of `total` pixels (from an area average or histogram bin) as a pixel count.
+    nonisolated private func pixelCount(fraction: Float, total: Int) -> Int {
+        Int((max(0, min(1, fraction)) * Float(total)).rounded(.toNearestOrAwayFromZero))
+    }
+
     /// Materializes a CIImage into an NSImage. For `hdr == true` the CGImage is created in
     /// extended-linear Display P3 with a half-float format so it carries true HDR pixels; the
     /// SwiftUI `Image` then shows them on EDR-capable displays via `.allowedDynamicRange(.high)`.
@@ -1773,22 +1648,8 @@ class HDRProcessor {
                 throw ProcessingError.gainMapGenerationFailed
             }
             data = d
-        } else if UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
-            // Legacy Core Image mono (PQ) — opt-in only.
-            let options: [CIImageRepresentationOption: Any] = [
-                kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
-                CIImageRepresentationOption.hdrImage: hdr,
-                CIImageRepresentationOption.hdrGainMapAsRGB: false
-            ]
-            guard let d = encode_ctx.heifRepresentation(of: sdrBase,
-                                                        format: .RGB10,
-                                                        colorSpace: p3_cs,
-                                                        options: options) else {
-                throw ProcessingError.gainMapGenerationFailed
-            }
-            data = d
         } else {
-            // Default: hand-assembled luma gain map (Display P3) — same bytes the exporter writes.
+            // Luma gain map — same bytes the exporter writes.
             guard let d = encodeMonoManualGainMapHEICData(hdr: hdr, sdrBase: sdrBase, baseProps: [:],
                                                           subsampleFactor: subsampleFactor, quality: 1.0) else {
                 try Task.checkCancellation()
@@ -1802,9 +1663,8 @@ class HDRProcessor {
         return reconstructed
     }
 
-    /// Extracts the gain map as a standalone CIImage for the `.gainMap` preview. RGB on → visualizes
-    /// the 3-channel gain map we compute; mono (default) → visualizes the hand-assembled luma gain map
-    /// as grayscale; the legacy Core Image mono path (opt-in) pulls Core Image's luma auxiliary.
+    /// Extracts the gain map as a standalone CIImage for the `.gainMap` preview: the 3-channel gain map
+    /// we compute when RGB is on, else the hand-assembled luma gain map as grayscale.
     /// The gain map is computed at the export resolution (`gainMapSubsampleFactor`) and then scaled
     /// back up to the SDR base extent — mirroring how the decoder upscales the stored map during
     /// reconstruction — so the preview reflects the 1× / ½× setting (½× looks softer) while keeping
@@ -1831,44 +1691,26 @@ class HDRProcessor {
                               colorSpace: p3_cs)
             return upscaledToBase(img, gmWidth: gm.width, gmHeight: gm.height)
         }
-        if !UserDefaults.standard.bool(forKey: "gainMapMonoCoreImage") {
-            // Default: visualize our hand-assembled luma gain map. Expand the L008 bytes into ARGB8
-            // gray (R=G=B=gain, A=255) so we can build the CIImage with the same .ARGB8 path as RGB.
-            guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else {
-                try Task.checkCancellation()
-                throw ProcessingError.gainMapGenerationFailed
-            }
-            var argb = [UInt8](repeating: 0, count: gm.width * gm.height * 4)
-            gm.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                let lum = raw.bindMemory(to: UInt8.self)
-                for p in 0..<(gm.width * gm.height) {
-                    let v = lum[p], i = p * 4
-                    argb[i] = 255; argb[i + 1] = v; argb[i + 2] = v; argb[i + 3] = v
-                }
-            }
-            let img = CIImage(bitmapData: Data(argb),
-                              bytesPerRow: gm.width * 4,
-                              size: CGSize(width: gm.width, height: gm.height),
-                              format: .ARGB8,
-                              colorSpace: p3_cs)
-            return upscaledToBase(img, gmWidth: gm.width, gmHeight: gm.height)
-        }
-        // Legacy Core Image mono (PQ) — opt-in only.
-        let options: [CIImageRepresentationOption: Any] = [
-            kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0,
-            CIImageRepresentationOption.hdrImage: hdr,
-            CIImageRepresentationOption.hdrGainMapAsRGB: false
-        ]
-        guard let data = encode_ctx.heifRepresentation(of: sdrBase,
-                                                       format: .RGB10,
-                                                       colorSpace: p3_cs,
-                                                       options: options) else {
+        // Luma: visualize our hand-assembled luma gain map. Expand the L008 bytes into ARGB8
+        // gray (R=G=B=gain, A=255) so we can build the CIImage with the same .ARGB8 path as RGB.
+        guard let gm = computeMonoGainMap(hdr: hdr, sdr: sdrBase, factor: subsampleFactor) else {
+            try Task.checkCancellation()
             throw ProcessingError.gainMapGenerationFailed
         }
-        guard let gainMap = CIImage(data: data, options: [.auxiliaryHDRGainMap: true]) else {
-            throw ProcessingError.gainMapExtractionFailed
+        var argb = [UInt8](repeating: 0, count: gm.width * gm.height * 4)
+        gm.data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let lum = raw.bindMemory(to: UInt8.self)
+            for p in 0..<(gm.width * gm.height) {
+                let v = lum[p], i = p * 4
+                argb[i] = 255; argb[i + 1] = v; argb[i + 2] = v; argb[i + 3] = v
+            }
         }
-        return gainMap
+        let img = CIImage(bitmapData: Data(argb),
+                          bytesPerRow: gm.width * 4,
+                          size: CGSize(width: gm.width, height: gm.height),
+                          format: .ARGB8,
+                          colorSpace: p3_cs)
+        return upscaledToBase(img, gmWidth: gm.width, gmHeight: gm.height)
     }
     
     /// Computes the histogram for the SDR output (no caching; always recomputed).
@@ -1895,42 +1737,15 @@ class HDRProcessor {
             cachedBase = rendered
         }
 
-        // CIImage → CGImage (materializes the tone-map at full res).
-        let tCG = Prof.tic()
-        guard let cgImage = encode_ctx.createCGImage(cachedBase, from: cachedBase.extent) else {
-            throw ProcessingError.imageConversionFailed
-        }
-        Prof.toc("histSDR.createCGImage [\(file)]", tCG)
-        let sdrImage = NSImage(cgImage: cgImage, size: NSSize(width: cachedBase.extent.width, height: cachedBase.extent.height))
-
         let tMetal = Prof.tic()
         defer { Prof.toc("histSDR.metalHist [\(file)]", tMetal) }
-        return try await calculateHistogramFromSDRImage(sdrImage, ciImage: cachedBase)
+        return try calculateHistogramFromSDR(cachedBase)
     }
 
-    /// Helper: compute histogram from an SDR NSImage.
-    /// Use Metal when available; otherwise fall back to CPU.
-    nonisolated private func calculateHistogramFromSDRImage(
-        _ sdrImage: NSImage,
-        ciImage: CIImage? = nil
-    ) async throws -> HistogramCalculator.HistogramResult {
-        
-        // print("   → Converting NSImage to CIImage...")
-        
-        // Use the provided CIImage or build one from the NSImage.
-        let workingCIImage: CIImage
-        if let provided = ciImage {
-            workingCIImage = provided
-        } else {
-            guard let cgImage = sdrImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-                // print("   ❌ Failed to get CGImage from NSImage")
-                throw ProcessingError.imageConversionFailed
-            }
-            workingCIImage = CIImage(cgImage: cgImage)
-        }
-        
-        // print("   ✅ CIImage ready: \(workingCIImage.extent)")
-        
+    /// SDR histogram of `workingCIImage`: Metal when available, else CPU.
+    nonisolated private func calculateHistogramFromSDR(
+        _ workingCIImage: CIImage
+    ) throws -> HistogramCalculator.HistogramResult {
         // Try Metal first.
         if let metalCalc = metalHistogram {
             // print("   🚀 Using METAL for histogram calculation...")

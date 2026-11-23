@@ -36,14 +36,17 @@ nonisolated func tonemap_sdr(from hdr: CIImage,
 
 // MARK: - Luminance Utilities
 
-/// Extracts linear luminance using Rec.709 coefficients (0.2126, 0.7152, 0.0722).
+/// Linear luminance of a linear Display P3 image (the engine's working space), in the R channel
+/// (G = B = 0, alpha kept). CIColorMatrix computes each output channel as the dot product of the
+/// input pixel with that channel's vector, so the weights all go in `rVector`.
 nonisolated func linear_luma(_ src: CIImage) -> CIImage {
+    let (wr, wg, wb) = Constants.displayP3LumaWeights
     let m = CIFilter.colorMatrix()
     m.inputImage = src
-    m.rVector   = CIVector(x: 0.2126, y: 0,      z: 0,      w: 0)
-    m.gVector   = CIVector(x: 0.7152, y: 0,      z: 0,      w: 0)
-    m.bVector   = CIVector(x: 0.0722, y: 0,      z: 0,      w: 0)
-    m.aVector   = CIVector(x: 0,      y: 0,      z: 0,      w: 1)
-    m.biasVector = CIVector(x: 0,     y: 0,      z: 0,      w: 0)
+    m.rVector   = CIVector(x: CGFloat(wr), y: CGFloat(wg), z: CGFloat(wb), w: 0)
+    m.gVector   = CIVector(x: 0, y: 0, z: 0, w: 0)
+    m.bVector   = CIVector(x: 0, y: 0, z: 0, w: 0)
+    m.aVector   = CIVector(x: 0, y: 0, z: 0, w: 1)
+    m.biasVector = CIVector(x: 0, y: 0, z: 0, w: 0)
     return m.outputImage!
 }

@@ -13,8 +13,6 @@ struct CLIArguments {
     let auto: Bool
     let autoTolerancePercent: Double?
     let rgb: Bool           // emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma
-    let monoCoreImage: Bool // use the legacy Core Image mono gain map (PQ) instead of the default
-                            // hand-assembled luma map (Display P3)
     let skipPreview: Bool   // experimental: skip generatePreview so the auto search runs cold (perf bench)
     let searchOnly: Bool    // experimental: run the auto search then exit before export (perf bench)
 
@@ -28,7 +26,6 @@ struct CLIArguments {
         var auto = false
         var autoTolerancePercent: Double? = nil
         var rgb = false
-        var monoCoreImage = false
         var skipPreview = false
         var searchOnly = false
         var positionalArgs: [String] = []
@@ -48,8 +45,6 @@ struct CLIArguments {
                 auto = true
             } else if arg == "--rgb" {
                 rgb = true
-            } else if arg == "--mono-coreimage" {
-                monoCoreImage = true
             } else if arg == "--skip-preview" {
                 skipPreview = true
             } else if arg == "--search-only" {
@@ -72,12 +67,6 @@ struct CLIArguments {
             return nil
         }
 
-        // --rgb and --mono-coreimage select mutually exclusive gain-map kinds.
-        if rgb && monoCoreImage {
-            print("❌ --rgb and --mono-coreimage are mutually exclusive (pick one gain-map kind)")
-            return nil
-        }
-
         return CLIArguments(
             inputPath: positionalArgs[0],
             outputPath: positionalArgs[1],
@@ -87,7 +76,6 @@ struct CLIArguments {
             auto: auto,
             autoTolerancePercent: autoTolerancePercent,
             rgb: rgb,
-            monoCoreImage: monoCoreImage,
             skipPreview: skipPreview,
             searchOnly: searchOnly
         )
@@ -109,8 +97,6 @@ struct CLIArguments {
                            pixels clipped in any single SDR channel within the tolerance
           --auto-tolerance=PCT   Per-channel clip tolerance for --auto, percent of pixels (default 1.0)
           --rgb            Emit a 3-channel (RGB) ISO 21496-1 gain map instead of luma (monochrome)
-          --mono-coreimage Use the legacy Core Image mono gain map instead of the default
-                           hand-assembled luma map. Mutually exclusive with --rgb.
 
         Example:
           HDR2gainmapCLI input.png output.heic --verify
@@ -204,24 +190,18 @@ func main() async {
     
     // Create HDRImage and processor
     let image = HDRImage(url: inputURL, loadThumbnailImmediately: false)
-    // The engine reads the gain map subsample factor from UserDefaults (shared with the GUI
-    // preference). Default is 1 (full) when unset.
-    if let gs = args.gainMapSubsample {
-        UserDefaults.standard.set(gs, forKey: "gainMapSubsampleFactor")
-    }
-    // The engine reads the gain-map kind from UserDefaults. We set BOTH keys explicitly every run
-    // (including the false case) — they live in the CLI's own argv0 UserDefaults domain, separate
-    // from the GUI app's domain — so each invocation is deterministic regardless of residual state
-    // left by a prior invocation on the same machine/runner. (The engine checks gainMapRGB first.)
-    UserDefaults.standard.set(args.rgb, forKey: "gainMapRGB")
-    UserDefaults.standard.set(args.monoCoreImage, forKey: "gainMapMonoCoreImage")
+    // Export options come from the command line only — never from (or into) UserDefaults — so every
+    // run is deterministic: an option left out takes its default, not a value from an earlier run.
+    let exportOptions = HDRProcessor.ExportOptions(
+        rgbGainMap: args.rgb,
+        gainMapSubsampleFactor: args.gainMapSubsample ?? 1,
+        quality: HDRProcessor.ExportOptions.defaultQuality
+    )
     let processor = HDRProcessor.shared
 
     if args.verbose {
-        let kind = args.rgb ? "RGB (3-channel)"
-            : (args.monoCoreImage ? "luma (Core Image, PQ)" : "luma (manual, Display P3)")
-        print("   Gain map: \(kind)")
-        let subsample = args.gainMapSubsample ?? 1
+        print("   Gain map: \(args.rgb ? "RGB (3-channel)" : "luma (1-channel)")")
+        let subsample = exportOptions.gainMapSubsampleFactor
         print("   Gain map resolution: \(subsample <= 1 ? "full (1×)" : "1/\(subsample)×")")
     }
     
@@ -300,9 +280,10 @@ func main() async {
         }
         
         let exportStart = Date()
-        try await processor.exportImage(image, to: outputURL)
+        try await processor.export(params: processor.previewParams(url: image.url, settings: image.settings),
+                                   options: exportOptions, to: outputURL)
         if args.verbose {
-            print("⏱  exportImage (encode + ISO + write): \(String(format: "%.3f", Date().timeIntervalSince(exportStart)))s wall")
+            print("⏱  export (tone-map + gain map + encode + write): \(String(format: "%.3f", Date().timeIntervalSince(exportStart)))s wall")
         }
 
         print("✅ Export successful: \(outputURL.path)")
